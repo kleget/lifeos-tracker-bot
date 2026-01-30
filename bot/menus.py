@@ -26,7 +26,6 @@ def build_keyboard(
 
 
 MAIN_MENU = [
-    ("✅ Сегодня", "menu:today"),
     ("🏋️ Спорт", "menu:sport"),
     ("📚 Учеба", "menu:study"),
     ("🌤 Досуг", "menu:leisure"),

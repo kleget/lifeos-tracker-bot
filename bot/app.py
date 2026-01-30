@@ -578,11 +578,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         summary = await build_daily_summary(context, date_str)
         await query.edit_message_text(f"{summary}\n\nВыбери раздел:", reply_markup=build_keyboard(MAIN_MENU, cols=2))
         return
-    if data == "menu:today":
-        await query.answer()
-        summary = await build_daily_summary(context, date_str)
-        await query.edit_message_text(summary, reply_markup=build_keyboard(MAIN_MENU, cols=2))
-        return
     if data == "menu:sport":
         daily = get_daily_data(context, date_str)
         await show_menu(query, "Спорт:", build_sport_menu(daily))
