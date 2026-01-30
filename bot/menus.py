@@ -166,9 +166,12 @@ FOOD_PROTEIN_OPTIONS = [
 ]
 
 FOOD_GARNISH_OPTIONS = [
+    ("Рис 50 г", "food_item:RICE_50"),
     ("Рис 100 г", "food_item:RICE_100"),
+    ("Овсянка 50 г", "food_item:OAT_50"),
     ("Овсянка 100 г", "food_item:OAT_100"),
     ("Картоха 100 г", "food_item:POT_100"),
+    ("Гречка 50 г", "food_item:BCKW_50"),
     ("Гречка 100 г", "food_item:BCKW_100"),
 ]
 
