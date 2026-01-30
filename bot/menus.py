@@ -37,15 +37,15 @@ MAIN_MENU = [
 
 SPORT_MENU = [
     ("Тренировка", "sport:training"),
+    ("Отдых", "sport:rest"),
+    ("Пропуск", "sport:skip"),
     ("Кардио", "sport:cardio"),
     ("Шаги", "sport:steps"),
 ]
 
 TRAINING_OPTIONS = [
-    ("Пропустил", "set:training:Пропустил"),
-    ("Отдых", "set:training:Отдых"),
-    ("Ноги", "set:training:Ноги"),
     ("Верх", "set:training:Верх"),
+    ("Низ", "set:training:Ноги"),
 ]
 
 CARDIO_OPTIONS = [

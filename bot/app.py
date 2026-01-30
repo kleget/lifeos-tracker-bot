@@ -166,8 +166,16 @@ def fmt_value(value: object) -> str:
     return str(value) if value not in (None, "") else "—"
 
 
+def display_training(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    if value == "Ноги":
+        return "Низ"
+    return str(value)
+
+
 def day_targets(training_value: str | None) -> dict | None:
-    if training_value in {"Ноги", "Верх"}:
+    if training_value in {"Ноги", "Низ", "Верх"}:
         return {
             "label": "Тренировочный день",
             "kcal": (1900, 2000),
@@ -184,6 +192,112 @@ def day_targets(training_value: str | None) -> dict | None:
             "carb": (140, 170),
         }
     return None
+
+
+def mark_set_buttons(buttons: list[tuple[str, str]], current_value: object) -> list[tuple[str, str]]:
+    current = "" if current_value is None else str(current_value)
+    if current.endswith(".0"):
+        current = current[:-2]
+    marked: list[tuple[str, str]] = []
+    for label, data in buttons:
+        if data.startswith("set:"):
+            parts = data.split(":", 2)
+            value = parts[2] if len(parts) > 2 else ""
+            if value == current:
+                label = f"✅ {label}"
+        marked.append((label, data))
+    return marked
+
+
+def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
+    cfg = context.application.bot_data["config"]
+    sheets = get_sheets(context)
+    row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
+    if not row:
+        return {}
+    values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
+    return dict(zip(DAILY_HEADERS, values))
+
+
+def build_sport_menu(data: dict) -> list[tuple[str, str]]:
+    training = data.get("Тренировка")
+    training_display = display_training(training)
+    training_selected = training_display is not None
+    training_label = "Тренировка"
+    if training_display:
+        training_label = f"Тренировка: {training_display}"
+
+    rest_selected = training == "Отдых"
+    skip_selected = training == "Пропустил"
+
+    cardio = data.get("Кардио_мин")
+    cardio_label = "Кардио"
+    if cardio not in (None, ""):
+        cardio_label = f"Кардио: {cardio}м"
+
+    steps = data.get("Шаги_категория")
+    steps_label = "Шаги"
+    if steps not in (None, ""):
+        steps_label = f"Шаги: {steps}"
+
+    buttons = [
+        (f"✅ {training_label}" if training_selected else training_label, "sport:training"),
+        ("✅ Отдых" if rest_selected else "Отдых", "sport:rest"),
+        ("✅ Пропуск" if skip_selected else "Пропуск", "sport:skip"),
+        (f"✅ {cardio_label}" if cardio not in (None, "") else cardio_label, "sport:cardio"),
+        (f"✅ {steps_label}" if steps not in (None, "") else steps_label, "sport:steps"),
+    ]
+    return buttons
+
+
+def build_study_menu(data: dict) -> list[tuple[str, str]]:
+    english = data.get("Английский_мин")
+    english_label = "Английский" if english in (None, "") else f"Английский: {english}м"
+
+    code_mode = data.get("Код_режим")
+    code_topic = data.get("Код_тема")
+    code_label = "Код"
+    if code_mode or code_topic:
+        code_label = f"Код: {code_mode or '—'}/{code_topic or '—'}"
+
+    reading = data.get("Чтение_стр")
+    reading_label = "Чтение" if reading in (None, "") else f"Чтение: {reading} стр"
+
+    return [
+        (f"✅ {english_label}" if english not in (None, "") else english_label, "study:english"),
+        (f"✅ {code_label}" if (code_mode or code_topic) else code_label, "study:code"),
+        (f"✅ {reading_label}" if reading not in (None, "") else reading_label, "study:reading"),
+    ]
+
+
+def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
+    rest_time = data.get("Отдых_время")
+    rest_label = "Отдых" if rest_time in (None, "") else f"Отдых: {rest_time}"
+
+    sleep_hours = data.get("Сон_часы")
+    sleep_label = "Сон" if sleep_hours in (None, "") else f"Сон: {sleep_hours}ч"
+
+    productivity = data.get("Продуктивность")
+    prod_label = "Продуктивность" if productivity in (None, "") else f"Продуктивность: {productivity}%"
+
+    return [
+        (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
+        (f"✅ {sleep_label}" if sleep_hours not in (None, "") else sleep_label, "leisure:sleep"),
+        (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
+    ]
+
+
+def build_morale_menu(data: dict) -> list[tuple[str, str]]:
+    mood = data.get("Настроение")
+    energy = data.get("Энергия")
+    weight = data.get("Вес")
+    return [
+        (f"✅ Настроение: {mood}" if mood not in (None, "") else "Настроение", "morale:mood"),
+        (f"✅ Энергия: {energy}" if energy not in (None, "") else "Энергия", "morale:energy"),
+        (f"✅ Вес: {weight}" if weight not in (None, "") else "Вес", "morale:weight"),
+        ("О чем жалею", "morale:regret"),
+        ("Отзыв о дне", "morale:review"),
+    ]
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,13 +320,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(summary, reply_markup=build_keyboard(MAIN_MENU, cols=2))
         return
     if data == "menu:sport":
-        await show_menu(query, "Спорт:", SPORT_MENU)
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Спорт:", build_sport_menu(daily))
         return
     if data == "menu:study":
-        await show_menu(query, "Учеба:", STUDY_MENU)
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Учеба:", build_study_menu(daily))
         return
     if data == "menu:leisure":
-        await show_menu(query, "Досуг:", LEISURE_MENU)
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Досуг:", build_leisure_menu(daily))
         return
     if data == "menu:food":
         await query.answer()
@@ -223,40 +340,69 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
     if data == "menu:morale":
-        await show_menu(query, "Моралька:", MORALE_MENU)
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Моралька:", build_morale_menu(daily))
         return
     if data == "menu:habits":
         await show_menu(query, "Привычки:", HABITS_MENU)
         return
 
     if data == "sport:training":
-        await show_menu(query, "Тренировка:", TRAINING_OPTIONS, back_to="menu:sport", cols=2)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Тренировка")
+        await show_menu(query, "Тренировка:", mark_set_buttons(TRAINING_OPTIONS, current), back_to="menu:sport", cols=2)
+        return
+    if data == "sport:rest":
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: "Отдых"}, max_rows=cfg.daily_max_rows)
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Спорт:", build_sport_menu(daily))
+        return
+    if data == "sport:skip":
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: "Пропустил"}, max_rows=cfg.daily_max_rows)
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Спорт:", build_sport_menu(daily))
         return
     if data == "sport:cardio":
-        await show_menu(query, "Кардио (мин):", CARDIO_OPTIONS, back_to="menu:sport", cols=3)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Кардио_мин")
+        await show_menu(query, "Кардио (мин):", mark_set_buttons(CARDIO_OPTIONS, current), back_to="menu:sport", cols=3)
         return
     if data == "sport:steps":
-        await show_menu(query, "Шаги:", STEPS_OPTIONS, back_to="menu:sport", cols=2)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Шаги_категория")
+        await show_menu(query, "Шаги:", mark_set_buttons(STEPS_OPTIONS, current), back_to="menu:sport", cols=2)
         return
 
     if data == "study:english":
-        await show_menu(query, "Английский:", ENGLISH_OPTIONS, back_to="menu:study", cols=3)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Английский_мин")
+        await show_menu(query, "Английский:", mark_set_buttons(ENGLISH_OPTIONS, current), back_to="menu:study", cols=3)
         return
     if data == "study:code":
-        await show_menu(query, "Код: режим", CODE_MODE_OPTIONS, back_to="menu:study", cols=1)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Код_режим")
+        await show_menu(query, "Код: режим", mark_set_buttons(CODE_MODE_OPTIONS, current), back_to="menu:study", cols=1)
         return
     if data == "study:reading":
-        await show_menu(query, "Чтение:", READING_OPTIONS, back_to="menu:study", cols=4)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Чтение_стр")
+        await show_menu(query, "Чтение:", mark_set_buttons(READING_OPTIONS, current), back_to="menu:study", cols=4)
         return
 
     if data == "leisure:rest":
-        await show_menu(query, "Отдых: время", REST_TIME_OPTIONS, back_to="menu:leisure", cols=2)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Отдых_время")
+        await show_menu(query, "Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, current), back_to="menu:leisure", cols=2)
         return
     if data == "leisure:sleep":
-        await show_menu(query, "Сон: во сколько заснул?", SLEEP_BEDTIME_OPTIONS, back_to="menu:leisure", cols=3)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Сон_отбой")
+        await show_menu(query, "Сон: во сколько заснул?", mark_set_buttons(SLEEP_BEDTIME_OPTIONS, current), back_to="menu:leisure", cols=3)
         return
     if data == "leisure:productivity":
-        await show_menu(query, "Продуктивность:", PRODUCTIVITY_OPTIONS, back_to="menu:leisure", cols=3)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Продуктивность")
+        await show_menu(query, "Продуктивность:", mark_set_buttons(PRODUCTIVITY_OPTIONS, current), back_to="menu:leisure", cols=3)
         return
 
     if data == "food:protein":
@@ -279,10 +425,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if data == "morale:mood":
-        await show_menu(query, "Настроение:", MOOD_OPTIONS, back_to="menu:morale", cols=2)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Настроение")
+        await show_menu(query, "Настроение:", mark_set_buttons(MOOD_OPTIONS, current), back_to="menu:morale", cols=2)
         return
     if data == "morale:energy":
-        await show_menu(query, "Энергия:", ENERGY_OPTIONS, back_to="menu:morale", cols=2)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Энергия")
+        await show_menu(query, "Энергия:", mark_set_buttons(ENERGY_OPTIONS, current), back_to="menu:morale", cols=2)
         return
     if data == "morale:weight":
         await query.answer()
@@ -313,31 +463,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         field_key, value = parts[1], parts[2]
         if field_key == "code_mode":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: value}, max_rows=cfg.daily_max_rows)
-            await show_menu(query, "Код: тема", CODE_TOPIC_OPTIONS, back_to="menu:study", cols=2)
+            daily = get_daily_data(context, date_str)
+            current_topic = daily.get("Код_тема")
+            await show_menu(query, "Код: тема", mark_set_buttons(CODE_TOPIC_OPTIONS, current_topic), back_to="menu:study", cols=2)
             return
         if field_key == "code_topic":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["code_topic"]: value}, max_rows=cfg.daily_max_rows)
-            await show_menu(query, "Учеба:", STUDY_MENU)
+            daily = get_daily_data(context, date_str)
+            await show_menu(query, "Учеба:", build_study_menu(daily))
             return
         if field_key == "rest_time":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["rest_time"]: value}, max_rows=cfg.daily_max_rows)
-            await show_menu(query, "Отдых: тип", REST_TYPE_OPTIONS, back_to="menu:leisure", cols=2)
+            daily = get_daily_data(context, date_str)
+            current_type = daily.get("Отдых_тип")
+            await show_menu(query, "Отдых: тип", mark_set_buttons(REST_TYPE_OPTIONS, current_type), back_to="menu:leisure", cols=2)
             return
         if field_key == "rest_type":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["rest_type"]: value}, max_rows=cfg.daily_max_rows)
-            await show_menu(query, "Досуг:", LEISURE_MENU)
+            daily = get_daily_data(context, date_str)
+            await show_menu(query, "Досуг:", build_leisure_menu(daily))
             return
         if field_key == "sleep_bed":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_bed"]: value}, max_rows=cfg.daily_max_rows)
-            await show_menu(query, "Сон: сколько часов?", SLEEP_HOURS_OPTIONS, back_to="menu:leisure", cols=3)
+            daily = get_daily_data(context, date_str)
+            current_hours = daily.get("Сон_часы")
+            await show_menu(query, "Сон: сколько часов?", mark_set_buttons(SLEEP_HOURS_OPTIONS, current_hours), back_to="menu:leisure", cols=3)
             return
         if field_key == "sleep_hours":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_hours"]: value}, max_rows=cfg.daily_max_rows)
-            await show_menu(query, "Сон: режим", SLEEP_REGIME_OPTIONS, back_to="menu:leisure", cols=2)
+            daily = get_daily_data(context, date_str)
+            current_regime = daily.get("Режим")
+            await show_menu(query, "Сон: режим", mark_set_buttons(SLEEP_REGIME_OPTIONS, current_regime), back_to="menu:leisure", cols=2)
             return
         if field_key == "sleep_regime":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_regime"]: value}, max_rows=cfg.daily_max_rows)
-            await show_menu(query, "Досуг:", LEISURE_MENU)
+            daily = get_daily_data(context, date_str)
+            await show_menu(query, "Досуг:", build_leisure_menu(daily))
             return
 
         field_map = {
@@ -357,16 +518,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 value = int(float(value))
             sheets.update_daily_fields(date_str, {col: value}, max_rows=cfg.daily_max_rows)
             if field_key in {"training", "cardio", "steps"}:
-                await show_menu(query, "Спорт:", SPORT_MENU)
+                daily = get_daily_data(context, date_str)
+                await show_menu(query, "Спорт:", build_sport_menu(daily))
                 return
             if field_key in {"english", "reading"}:
-                await show_menu(query, "Учеба:", STUDY_MENU)
+                daily = get_daily_data(context, date_str)
+                await show_menu(query, "Учеба:", build_study_menu(daily))
                 return
             if field_key == "productivity":
-                await show_menu(query, "Досуг:", LEISURE_MENU)
+                daily = get_daily_data(context, date_str)
+                await show_menu(query, "Досуг:", build_leisure_menu(daily))
                 return
             if field_key in {"mood", "energy"}:
-                await show_menu(query, "Моралька:", MORALE_MENU)
+                daily = get_daily_data(context, date_str)
+                await show_menu(query, "Моралька:", build_morale_menu(daily))
                 return
 
     if data.startswith("food_item:"):
@@ -496,8 +661,9 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     ]
 
     sport_parts = []
-    if data.get("Тренировка"):
-        sport_parts.append(str(data.get("Тренировка")))
+    training_display = display_training(data.get("Тренировка"))
+    if training_display:
+        sport_parts.append(training_display)
     if data.get("Кардио_мин"):
         sport_parts.append(f"кардио {data.get('Кардио_мин')}м")
     if data.get("Шаги_категория"):
@@ -571,6 +737,50 @@ async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) 
         f"• Ккал: {fmt_num(kcal)}",
         f"• Б/Ж/У: {fmt_num(protein, 1)} / {fmt_num(fat, 1)} / {fmt_num(carbs, 1)}",
     ]
+
+    # List of foods eaten today
+    food_rows = sheets.get_values(f"FoodLog!A2:E{cfg.foodlog_max_rows + 1}")
+    portion_rows = sheets.get_values("Portions!A2:C")
+    portion_map: dict[str, str] = {}
+    for row_item in portion_rows:
+        if not row_item or len(row_item) < 2:
+            continue
+        code = str(row_item[0])
+        product = str(row_item[1])
+        desc = str(row_item[2]) if len(row_item) > 2 and row_item[2] not in (None, "") else ""
+        label = f"{product} ({desc})" if desc else product
+        portion_map[code] = label
+
+    eaten: dict[str, dict[str, float]] = {}
+    for row_item in food_rows:
+        if not row_item or len(row_item) < 4:
+            continue
+        if row_item[0] != date_str:
+            continue
+        code = str(row_item[2])
+        qty = parse_sheet_number(row_item[3])
+        grams = parse_sheet_number(row_item[4]) if len(row_item) > 4 else 0.0
+        label = portion_map.get(code, code)
+        if label not in eaten:
+            eaten[label] = {"qty": 0.0, "grams": 0.0}
+        eaten[label]["qty"] += qty
+        eaten[label]["grams"] += grams
+
+    if eaten:
+        lines.append("")
+        lines.append("🧾 Съел сегодня:")
+        items = list(eaten.items())
+        max_items = 12
+        for label, stats in items[:max_items]:
+            qty = stats["qty"]
+            grams = stats["grams"]
+            qty_str = fmt_num(qty, 1) if qty % 1 else str(int(qty))
+            line = f"• {label} ×{qty_str}"
+            if grams > 0:
+                line += f" (~{fmt_num(grams)} г)"
+            lines.append(line)
+        if len(items) > max_items:
+            lines.append(f"… ещё {len(items) - max_items} позиций")
 
     targets = day_targets(data.get("Тренировка"))
     if not targets:
