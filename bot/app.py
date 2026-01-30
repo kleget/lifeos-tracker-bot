@@ -233,9 +233,55 @@ def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
     return dict(zip(DAILY_HEADERS, values))
 
 
+def normalize_choice(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
+FIELD_HEADERS = {
+    "training": "Тренировка",
+    "cardio": "Кардио_мин",
+    "steps": "Шаги_категория",
+    "english": "Английский_мин",
+    "code_mode": "Код_режим",
+    "code_topic": "Код_тема",
+    "reading": "Чтение_стр",
+    "rest_time": "Отдых_время",
+    "rest_type": "Отдых_тип",
+    "sleep_bed": "Сон_отбой",
+    "sleep_hours": "Сон_часы",
+    "sleep_regime": "Режим",
+    "productivity": "Продуктивность",
+    "mood": "Настроение",
+    "energy": "Энергия",
+}
+
+FIELD_LABELS = {
+    "training": "Тренировка",
+    "cardio": "Кардио",
+    "steps": "Шаги",
+    "english": "Английский",
+    "code_mode": "Код (режим)",
+    "code_topic": "Код (тема)",
+    "reading": "Чтение",
+    "rest_time": "Отдых (время)",
+    "rest_type": "Отдых (тип)",
+    "sleep_bed": "Сон (отбой)",
+    "sleep_hours": "Сон (часы)",
+    "sleep_regime": "Режим",
+    "productivity": "Продуктивность",
+    "mood": "Настроение",
+    "energy": "Энергия",
+}
+
+
 def build_sport_menu(data: dict) -> list[tuple[str, str]]:
     training = data.get("Тренировка")
-    training_display = display_training(training)
+    training_display = display_training(training) if training in {"Ноги", "Верх"} else None
     training_selected = training_display is not None
     training_label = "Тренировка"
     if training_display:
@@ -314,6 +360,76 @@ def build_morale_menu(data: dict) -> list[tuple[str, str]]:
     ]
 
 
+def menu_config(menu_key: str, data: dict) -> tuple[str, list[tuple[str, str]], str, int]:
+    if menu_key == "sport":
+        return ("Спорт:", build_sport_menu(data), "menu:main", 2)
+    if menu_key == "study":
+        return ("Учеба:", build_study_menu(data), "menu:main", 2)
+    if menu_key == "leisure":
+        return ("Досуг:", build_leisure_menu(data), "menu:main", 2)
+    if menu_key == "morale":
+        return ("Моралька:", build_morale_menu(data), "menu:main", 2)
+    if menu_key == "training":
+        return ("Тренировка:", mark_set_buttons(TRAINING_OPTIONS, data.get("Тренировка")), "menu:sport", 2)
+    if menu_key == "cardio":
+        return ("Кардио (мин):", mark_set_buttons(CARDIO_OPTIONS, data.get("Кардио_мин")), "menu:sport", 3)
+    if menu_key == "steps":
+        return ("Шаги:", mark_set_buttons(STEPS_OPTIONS, data.get("Шаги_категория")), "menu:sport", 2)
+    if menu_key == "english":
+        return ("Английский:", mark_set_buttons(ENGLISH_OPTIONS, data.get("Английский_мин")), "menu:study", 3)
+    if menu_key == "code_mode":
+        return ("Код: режим", mark_set_buttons(CODE_MODE_OPTIONS, data.get("Код_режим")), "menu:study", 1)
+    if menu_key == "code_topic":
+        return ("Код: тема", mark_set_buttons(CODE_TOPIC_OPTIONS, data.get("Код_тема")), "menu:study", 2)
+    if menu_key == "reading":
+        return ("Чтение:", mark_set_buttons(READING_OPTIONS, data.get("Чтение_стр")), "menu:study", 4)
+    if menu_key == "rest_time":
+        return ("Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, data.get("Отдых_время")), "menu:leisure", 2)
+    if menu_key == "rest_type":
+        return ("Отдых: тип", mark_set_buttons(REST_TYPE_OPTIONS, data.get("Отдых_тип")), "menu:leisure", 2)
+    if menu_key == "sleep_bed":
+        return ("Сон: во сколько заснул?", mark_set_buttons(SLEEP_BEDTIME_OPTIONS, data.get("Сон_отбой")), "menu:leisure", 3)
+    if menu_key == "sleep_hours":
+        return ("Сон: сколько часов?", mark_set_buttons(SLEEP_HOURS_OPTIONS, data.get("Сон_часы")), "menu:leisure", 3)
+    if menu_key == "sleep_regime":
+        return ("Сон: режим", mark_set_buttons(SLEEP_REGIME_OPTIONS, data.get("Режим")), "menu:leisure", 2)
+    if menu_key == "productivity":
+        return ("Продуктивность:", mark_set_buttons(PRODUCTIVITY_OPTIONS, data.get("Продуктивность")), "menu:leisure", 3)
+    if menu_key == "mood":
+        return ("Настроение:", mark_set_buttons(MOOD_OPTIONS, data.get("Настроение")), "menu:morale", 2)
+    if menu_key == "energy":
+        return ("Энергия:", mark_set_buttons(ENERGY_OPTIONS, data.get("Энергия")), "menu:morale", 2)
+    return ("Главное меню:", MAIN_MENU, "menu:main", 2)
+
+
+async def confirm_override(
+    context: ContextTypes.DEFAULT_TYPE,
+    query,
+    *,
+    field_key: str,
+    current_value: object,
+    new_value: object,
+    return_menu: str,
+    next_menu: str | None = None,
+) -> None:
+    label = FIELD_LABELS.get(field_key, field_key)
+    current_display = display_training(current_value) if field_key == "training" else fmt_value(current_value)
+    new_display = display_training(new_value) if field_key == "training" else fmt_value(new_value)
+    context.user_data["pending_set"] = {
+        "field_key": field_key,
+        "value": new_value,
+        "return_menu": return_menu,
+        "next_menu": next_menu,
+    }
+    buttons = [("✅ Да", "confirm:yes"), ("↩️ Нет", "confirm:no")]
+    back_cb = return_menu if return_menu.startswith("menu:") else f"menu:{return_menu}"
+    await query.answer()
+    await query.edit_message_text(
+        f"⚠️ {label}\nСейчас: {current_display}\nЗаменить на: {new_display}?",
+        reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", back_cb)),
+    )
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(context, update.effective_user.id if update.effective_user else None):
         return
@@ -322,6 +438,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
     date_str = today_str(cfg.timezone)
+
+    if data.startswith("confirm:"):
+        await query.answer()
+        pending = context.user_data.get("pending_set")
+        if not pending:
+            await query.edit_message_text("Главное меню:", reply_markup=build_keyboard(MAIN_MENU, cols=2))
+            return
+        if data == "confirm:yes":
+            field_key = pending["field_key"]
+            value = pending["value"]
+            next_menu = pending.get("next_menu")
+            return_menu = pending.get("return_menu", "menu:main")
+            sheets.update_daily_fields(date_str, {COLUMN_MAP[field_key]: value}, max_rows=cfg.daily_max_rows)
+            context.user_data.pop("pending_set", None)
+            daily = get_daily_data(context, date_str)
+            menu_key = next_menu or return_menu
+            title, buttons, back_to, cols = menu_config(menu_key, daily)
+            await show_menu(query, title, buttons, back_to=back_to, cols=cols)
+            return
+        if data == "confirm:no":
+            return_menu = pending.get("return_menu", "menu:main")
+            context.user_data.pop("pending_set", None)
+            daily = get_daily_data(context, date_str)
+            title, buttons, back_to, cols = menu_config(return_menu, daily)
+            await show_menu(query, title, buttons, back_to=back_to, cols=cols)
+            return
 
     if data == "menu:main":
         await query.answer()
@@ -367,12 +509,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_menu(query, "Тренировка:", mark_set_buttons(TRAINING_OPTIONS, current), back_to="menu:sport", cols=2)
         return
     if data == "sport:rest":
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: "Отдых"}, max_rows=cfg.daily_max_rows)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Тренировка")
+        new_value = "Отдых"
+        if normalize_choice(current) and normalize_choice(current) != normalize_choice(new_value):
+            await confirm_override(
+                context,
+                query,
+                field_key="training",
+                current_value=current,
+                new_value=new_value,
+                return_menu="sport",
+            )
+            return
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: new_value}, max_rows=cfg.daily_max_rows)
         daily = get_daily_data(context, date_str)
         await show_menu(query, "Спорт:", build_sport_menu(daily))
         return
     if data == "sport:skip":
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: "Пропустил"}, max_rows=cfg.daily_max_rows)
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Тренировка")
+        new_value = "Пропустил"
+        if normalize_choice(current) and normalize_choice(current) != normalize_choice(new_value):
+            await confirm_override(
+                context,
+                query,
+                field_key="training",
+                current_value=current,
+                new_value=new_value,
+                return_menu="sport",
+            )
+            return
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: new_value}, max_rows=cfg.daily_max_rows)
         daily = get_daily_data(context, date_str)
         await show_menu(query, "Спорт:", build_sport_menu(daily))
         return
@@ -475,6 +643,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if len(parts) < 3:
             return
         field_key, value = parts[1], parts[2]
+        if field_key in FIELD_HEADERS:
+            daily = get_daily_data(context, date_str)
+            current = daily.get(FIELD_HEADERS[field_key])
+            if normalize_choice(current) and normalize_choice(current) != normalize_choice(value):
+                next_menu = None
+                return_menu = "menu:main"
+                if field_key in {"training", "cardio", "steps"}:
+                    return_menu = "sport"
+                elif field_key in {"english", "code_mode", "code_topic", "reading"}:
+                    return_menu = "study"
+                elif field_key in {"rest_time", "rest_type", "sleep_bed", "sleep_hours", "sleep_regime", "productivity"}:
+                    return_menu = "leisure"
+                elif field_key in {"mood", "energy"}:
+                    return_menu = "morale"
+                if field_key == "code_mode":
+                    next_menu = "code_topic"
+                elif field_key == "rest_time":
+                    next_menu = "rest_type"
+                elif field_key == "sleep_bed":
+                    next_menu = "sleep_hours"
+                elif field_key == "sleep_hours":
+                    next_menu = "sleep_regime"
+                await confirm_override(
+                    context,
+                    query,
+                    field_key=field_key,
+                    current_value=current,
+                    new_value=value,
+                    return_menu=return_menu,
+                    next_menu=next_menu,
+                )
+                return
         if field_key == "code_mode":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: value}, max_rows=cfg.daily_max_rows)
             daily = get_daily_data(context, date_str)
