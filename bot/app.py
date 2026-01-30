@@ -112,8 +112,11 @@ def is_authorized(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bo
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(context, update.effective_user.id if update.effective_user else None):
         return
+    cfg = context.application.bot_data["config"]
+    date_str = today_str(cfg.timezone)
+    summary = await build_daily_summary(context, date_str)
     await update.message.reply_text(
-        "Главное меню:",
+        f"{summary}\n\nВыбери раздел:",
         reply_markup=build_keyboard(MAIN_MENU, cols=2),
     )
 
@@ -194,7 +197,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "menu:main":
         await query.answer()
-        await query.edit_message_text("Главное меню:", reply_markup=build_keyboard(MAIN_MENU, cols=2))
+        summary = await build_daily_summary(context, date_str)
+        await query.edit_message_text(f"{summary}\n\nВыбери раздел:", reply_markup=build_keyboard(MAIN_MENU, cols=2))
         return
     if data == "menu:today":
         await query.answer()
