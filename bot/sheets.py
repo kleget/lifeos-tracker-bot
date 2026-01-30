@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
+import ssl
+import time
 from typing import Iterable, Optional
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from httplib2 import HttpLib2Error
 
 
 @dataclass
@@ -27,8 +32,8 @@ class SheetsClient:
         value_render_option: str = "FORMATTED_VALUE",
         date_time_render_option: str = "FORMATTED_STRING",
     ) -> list[list[str]]:
-        result = (
-            self._service.spreadsheets()
+        result = self._execute_with_retry(
+            lambda: self._service.spreadsheets()
             .values()
             .get(
                 spreadsheetId=self._sheet_id,
@@ -48,8 +53,8 @@ class SheetsClient:
         value_input_option: str = "USER_ENTERED",
     ) -> None:
         body = {"values": values}
-        (
-            self._service.spreadsheets()
+        self._execute_with_retry(
+            lambda: self._service.spreadsheets()
             .values()
             .update(
                 spreadsheetId=self._sheet_id,
@@ -67,12 +72,33 @@ class SheetsClient:
         value_input_option: str = "USER_ENTERED",
     ) -> None:
         body = {"valueInputOption": value_input_option, "data": list(updates)}
-        (
-            self._service.spreadsheets()
+        self._execute_with_retry(
+            lambda: self._service.spreadsheets()
             .values()
             .batchUpdate(spreadsheetId=self._sheet_id, body=body)
             .execute()
         )
+
+    def _execute_with_retry(self, func, attempts: int = 3):
+        last_err: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return func()
+            except HttpError as exc:
+                status = getattr(exc, "status_code", None)
+                if status is None and hasattr(exc, "resp"):
+                    status = getattr(exc.resp, "status", None)
+                if status in (429, 500, 502, 503, 504):
+                    last_err = exc
+                else:
+                    raise
+            except (ssl.SSLError, HttpLib2Error, ConnectionError, OSError) as exc:
+                last_err = exc
+            if attempt < attempts:
+                time.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.2))
+        if last_err:
+            raise last_err
+        return func()
 
     def find_first_empty_row(
         self,

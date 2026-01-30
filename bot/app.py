@@ -109,6 +109,20 @@ def is_authorized(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bo
     return user_id == allowed
 
 
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    LOGGER.exception("Unhandled error: %s", context.error)
+    if update is None:
+        return
+    try:
+        if hasattr(update, "effective_chat") and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ Ошибка при обращении к таблице. Попробуй ещё раз через минуту.",
+            )
+    except Exception:
+        LOGGER.exception("Failed to send error message")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(context, update.effective_user.id if update.effective_user else None):
         return
@@ -850,6 +864,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(handle_error)
 
     LOGGER.info("Bot started")
     if sys.platform.startswith("win"):
