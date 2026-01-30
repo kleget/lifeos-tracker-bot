@@ -35,6 +35,7 @@ from menus import (
     SLEEP_HOURS_OPTIONS,
     SLEEP_REGIME_OPTIONS,
     PRODUCTIVITY_OPTIONS,
+    PROCRASTINATION_OPTIONS,
     FOOD_MENU,
     FOOD_PROTEIN_OPTIONS,
     FOOD_GARNISH_OPTIONS,
@@ -370,10 +371,16 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
     productivity = data.get("Продуктивность")
     prod_label = "Продуктивность" if productivity in (None, "") else f"Продуктивность: {productivity}%"
 
+    anti_count = data.get("_anti_count")
+    anti_label = "Анти‑прокраст."
+    if anti_count:
+        anti_label = f"Анти‑прокраст.: {anti_count}"
+
     return [
         (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
         (f"✅ {sleep_label}" if sleep_hours not in (None, "") else sleep_label, "leisure:sleep"),
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
+        (f"✅ {anti_label}" if anti_count else anti_label, "leisure:anti"),
     ]
 
 
@@ -449,6 +456,49 @@ async def build_habits_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -
     return header, buttons
 
 
+def sync_code_fields(sheets: SheetsClient, date_str: str, *, max_rows: int = 400) -> None:
+    sessions = sheets.get_sessions(date_str, category="Код")
+    if not sessions:
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: "", COLUMN_MAP["code_topic"]: ""}, max_rows=max_rows)
+        return
+    last = sessions[-1].get("subcategory") or ""
+    if "/" in last:
+        mode, topic = last.split("/", 1)
+    else:
+        mode, topic = last, ""
+    sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: mode, COLUMN_MAP["code_topic"]: topic}, max_rows=max_rows)
+
+
+async def build_anti_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> tuple[str, list[tuple[str, str]]]:
+    sheets = get_sheets(context)
+    sessions = sheets.get_sessions(date_str, category="Анти")
+    counts: dict[str, int] = {}
+    for item in sessions:
+        reason = item.get("subcategory") or ""
+        if not reason:
+            continue
+        counts[reason] = counts.get(reason, 0) + 1
+
+    lines = ["🧯 Анти‑прокрастинация"]
+    if counts:
+        summary = ", ".join(f"{k}×{v}" for k, v in list(counts.items())[:6])
+        lines.append(f"Сегодня: {summary}")
+    else:
+        lines.append("Сегодня пока нет отметок.")
+
+    buttons: list[tuple[str, str]] = []
+    for label, data in PROCRASTINATION_OPTIONS:
+        count = counts.get(label)
+        display = f"{label} ({count})" if count else label
+        buttons.append((display, data))
+    buttons.append(("✍️ Другое", "anti:custom"))
+    buttons.append(("↩️ Удалить последнюю", "anti:undo"))
+    if counts:
+        buttons.append(("🗑 Очистить сегодня", "anti:clear"))
+
+    return "\n".join(lines), buttons
+
+
 def build_code_label(sessions: list[dict]) -> tuple[str, bool]:
     if not sessions:
         return ("Код", False)
@@ -466,6 +516,119 @@ async def show_study_menu(query, context: ContextTypes.DEFAULT_TYPE, date_str: s
     sessions = sheets.get_sessions(date_str, category="Код")
     code_label, code_selected = build_code_label(sessions)
     await show_menu(query, "Учеба:", build_study_menu(daily, code_label=code_label, code_selected=code_selected))
+
+
+def compute_portions(portion_rows: list[list[object]], food_rows: list[list[object]]) -> list[dict]:
+    product_map: dict[str, dict[str, float]] = {}
+    for row in food_rows:
+        if len(row) < 5:
+            continue
+        name = str(row[0]).strip()
+        if not name:
+            continue
+        product_map[name] = {
+            "protein": parse_sheet_number(row[1]),
+            "fat": parse_sheet_number(row[2]),
+            "carb": parse_sheet_number(row[3]),
+            "kcal": parse_sheet_number(row[4]),
+        }
+
+    portions: list[dict] = []
+    for row in portion_rows:
+        if len(row) < 4:
+            continue
+        code = str(row[0]).strip()
+        product = str(row[1]).strip() if row[1] else ""
+        desc = str(row[2]).strip() if row[2] else ""
+        grams = parse_sheet_number(row[3])
+        if not code or not product or grams <= 0:
+            continue
+        per100 = product_map.get(product)
+        if not per100:
+            continue
+        macros = {
+            "kcal": grams / 100 * per100["kcal"],
+            "protein": grams / 100 * per100["protein"],
+            "fat": grams / 100 * per100["fat"],
+            "carb": grams / 100 * per100["carb"],
+        }
+        label = f"{product} ({desc})" if desc else product
+        portions.append(
+            {
+                "code": code,
+                "product": product,
+                "label": label,
+                "grams": grams,
+                "macros": macros,
+            }
+        )
+    return portions
+
+
+def recommend_portions(
+    current: dict,
+    target_mid: dict,
+    portions: list[dict],
+    *,
+    eaten_products: set[str],
+    max_items: int = 3,
+) -> list[dict]:
+    weights = {"kcal": 1.0, "protein": 1.3, "fat": 0.8, "carb": 1.0}
+
+    def deficit(vec):
+        return {
+            key: max(0.0, target_mid[key] - vec.get(key, 0.0))
+            for key in target_mid
+        }
+
+    base_def = deficit(current)
+    base_score = sum((base_def[k] ** 2) * weights[k] for k in base_def)
+
+    scored = []
+    for portion in portions:
+        new_vec = {
+            key: current.get(key, 0.0) + portion["macros"].get(key, 0.0)
+            for key in target_mid
+        }
+        new_def = deficit(new_vec)
+        new_score = sum((new_def[k] ** 2) * weights[k] for k in new_def)
+        improvement = base_score - new_score
+        if improvement <= 0:
+            continue
+        penalty = 0.6 if portion["product"] in eaten_products else 1.0
+        scored.append((improvement * penalty, portion))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored[:max_items]]
+
+
+def build_plan(
+    current: dict,
+    target_mid: dict,
+    portions: list[dict],
+    *,
+    eaten_products: set[str],
+    max_steps: int = 4,
+) -> list[dict]:
+    plan: list[dict] = []
+    temp = current.copy()
+    used_products: set[str] = set()
+    for _ in range(max_steps):
+        candidates = recommend_portions(
+            temp,
+            target_mid,
+            portions,
+            eaten_products=eaten_products.union(used_products),
+            max_items=1,
+        )
+        if not candidates:
+            break
+        choice = candidates[0]
+        plan.append(choice)
+        used_products.add(choice["product"])
+        for key in target_mid:
+            temp[key] = temp.get(key, 0.0) + choice["macros"].get(key, 0.0)
+    return plan
 
 
 def menu_config(menu_key: str, data: dict) -> tuple[str, list[tuple[str, str]], str, int]:
@@ -562,6 +725,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data.pop("pending_set", None)
             daily = get_daily_data(context, date_str)
             menu_key = next_menu or return_menu
+            if menu_key == "study":
+                await show_study_menu(query, context, date_str)
+                return
             title, buttons, back_to, cols = menu_config(menu_key, daily)
             await show_menu(query, title, buttons, back_to=back_to, cols=cols)
             return
@@ -569,6 +735,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return_menu = pending.get("return_menu", "menu:main")
             context.user_data.pop("pending_set", None)
             daily = get_daily_data(context, date_str)
+            if return_menu == "study":
+                await show_study_menu(query, context, date_str)
+                return
             title, buttons, back_to, cols = menu_config(return_menu, daily)
             await show_menu(query, title, buttons, back_to=back_to, cols=cols)
             return
@@ -587,6 +756,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     if data == "menu:leisure":
         daily = get_daily_data(context, date_str)
+        anti_sessions = sheets.get_sessions(date_str, category="Анти")
+        if anti_sessions:
+            daily["_anti_count"] = len(anti_sessions)
         await show_menu(query, "Досуг:", build_leisure_menu(daily))
         return
     if data == "menu:food":
@@ -656,6 +828,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             text,
             reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:main")),
+        )
+        return
+
+    if data.startswith("anti:"):
+        await query.answer()
+        reason = data.split(":", 1)[1] if ":" in data else ""
+        if reason == "custom":
+            context.user_data["expect"] = "anti_custom"
+            await query.edit_message_text("Напиши причину прокрастинации (коротко):")
+            return
+        if reason == "undo":
+            removed = sheets.delete_last_session(date_str, category="Анти")
+            text, buttons = await build_anti_menu(context, date_str)
+            prefix = "↩️ Удалил последнюю.\n\n" if removed else "Нет записей для удаления.\n\n"
+            await query.edit_message_text(
+                f"{prefix}{text}",
+                reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")),
+            )
+            return
+        if reason == "clear":
+            sheets.clear_sessions(date_str, category="Анти")
+            text, buttons = await build_anti_menu(context, date_str)
+            await query.edit_message_text(
+                f"🗑 Очистил записи.\n\n{text}",
+                reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")),
+            )
+            return
+        # regular reason
+        sheets.add_session(date_str, time_str(cfg.timezone), "Анти", reason, 0, "")
+        text, buttons = await build_anti_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")),
         )
         return
 
@@ -751,6 +956,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
         sheets.add_session(date_str, time_str(cfg.timezone), "Код", f"{mode}/{topic}", 0, "")
+        sync_code_fields(sheets, date_str, max_rows=cfg.daily_max_rows)
         context.user_data.pop("code_mode", None)
         text, buttons = await build_code_menu(context, date_str)
         await query.answer()
@@ -762,6 +968,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "code:undo":
         removed = sheets.delete_last_session(date_str, category="Код")
+        if removed:
+            sync_code_fields(sheets, date_str, max_rows=cfg.daily_max_rows)
         text, buttons = await build_code_menu(context, date_str)
         await query.answer()
         prefix = "↩️ Удалил последнюю запись.\n\n" if removed else "Нет записей для удаления.\n\n"
@@ -784,6 +992,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer()
         if data == "code_clear:yes":
             sheets.clear_sessions(date_str, category="Код")
+            sync_code_fields(sheets, date_str, max_rows=cfg.daily_max_rows)
             context.user_data.pop("pending_code_clear", None)
             text, buttons = await build_code_menu(context, date_str)
             await query.edit_message_text(
@@ -814,6 +1023,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         daily = get_daily_data(context, date_str)
         current = daily.get("Продуктивность")
         await show_menu(query, "Продуктивность:", mark_set_buttons(PRODUCTIVITY_OPTIONS, current), back_to="menu:leisure", cols=3)
+        return
+    if data == "leisure:anti":
+        await query.answer()
+        text, buttons = await build_anti_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")),
+        )
         return
 
     if data == "food:protein":
@@ -1050,6 +1267,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(text_menu, reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:main")))
         return
 
+    if expect == "anti_custom":
+        reason = text
+        sheets.add_session(date_str, time_str(cfg.timezone), "Анти", reason, 0, "")
+        context.user_data.clear()
+        await update.message.reply_text("✅ Записал.")
+        text_menu, buttons = await build_anti_menu(context, date_str)
+        await update.message.reply_text(text_menu, reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")))
+        return
+
     if expect == "custom_name":
         context.user_data["custom_name"] = text
         context.user_data["expect"] = "custom_macros"
@@ -1156,6 +1382,14 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     if leisure_parts:
         lines.append(f"🙂 Моралька: {', '.join(leisure_parts)}")
 
+    anti_sessions = sheets.get_sessions(date_str, category="Анти")
+    if anti_sessions:
+        reasons = [s.get("subcategory") for s in anti_sessions if s.get("subcategory")]
+        preview = ", ".join(reasons[:3])
+        if len(reasons) > 3:
+            preview = f"{preview} +{len(reasons) - 3}"
+        lines.append(f"🧯 Анти‑прокраст.: {preview}")
+
     if data.get("Вес"):
         lines.append(f"⚖️ Вес: {data.get('Вес')}")
     if data.get("О_чем_жалею"):
@@ -1204,18 +1438,13 @@ async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) 
 
     # List of foods eaten today
     food_rows = sheets.get_values(f"FoodLog!A2:E{cfg.foodlog_max_rows + 1}")
-    portion_rows = sheets.get_values("Portions!A2:C")
-    portion_map: dict[str, str] = {}
-    for row_item in portion_rows:
-        if not row_item or len(row_item) < 2:
-            continue
-        code = str(row_item[0])
-        product = str(row_item[1])
-        desc = str(row_item[2]) if len(row_item) > 2 and row_item[2] not in (None, "") else ""
-        label = f"{product} ({desc})" if desc else product
-        portion_map[code] = label
+    portion_rows = sheets.get_values("Portions!A2:D")
+    food_items_rows = sheets.get_values("FoodItems!A2:E")
+    portions = compute_portions(portion_rows, food_items_rows)
+    portion_map: dict[str, dict] = {p["code"]: p for p in portions}
 
     eaten: dict[str, dict[str, float]] = {}
+    eaten_products: set[str] = set()
     for row_item in food_rows:
         if not row_item or len(row_item) < 4:
             continue
@@ -1224,7 +1453,10 @@ async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) 
         code = str(row_item[2])
         qty = parse_sheet_number(row_item[3])
         grams = parse_sheet_number(row_item[4]) if len(row_item) > 4 else 0.0
-        label = portion_map.get(code, code)
+        portion = portion_map.get(code)
+        label = portion["label"] if portion else code
+        if portion:
+            eaten_products.add(portion["product"])
         if label not in eaten:
             eaten[label] = {"qty": 0.0, "grams": 0.0}
         eaten[label]["qty"] += qty
@@ -1298,6 +1530,36 @@ async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) 
         lines.append(
             f"🚨 Перебор: Ккал +{fmt_num(over_kcal)} | Б +{fmt_num(over_p, 1)} | Ж +{fmt_num(over_f, 1)} | У +{fmt_num(over_c, 1)}"
         )
+
+    target_mid = {
+        "kcal": (kcal_min + kcal_max) / 2,
+        "protein": (p_min + p_max) / 2,
+        "fat": (f_min + f_max) / 2,
+        "carb": (c_min + c_max) / 2,
+    }
+    current_vec = {"kcal": kcal, "protein": protein, "fat": fat, "carb": carbs}
+    recommendations = recommend_portions(
+        current_vec,
+        target_mid,
+        portions,
+        eaten_products=eaten_products,
+        max_items=3,
+    )
+    if recommendations:
+        lines.append("")
+        lines.append("🤖 Что лучше добрать сейчас:")
+        for item in recommendations:
+            m = item["macros"]
+            lines.append(
+                f"• {item['label']} — +{fmt_num(m['kcal'])} ккал, Б {fmt_num(m['protein'],1)}, Ж {fmt_num(m['fat'],1)}, У {fmt_num(m['carb'],1)}"
+            )
+
+    plan = build_plan(current_vec, target_mid, portions, eaten_products=eaten_products, max_steps=4)
+    if plan:
+        lines.append("")
+        lines.append("🍱 Черновик рациона на остаток дня:")
+        for item in plan:
+            lines.append(f"• {item['label']}")
 
     return "\n".join(lines)
 

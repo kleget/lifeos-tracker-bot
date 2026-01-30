@@ -98,6 +98,7 @@ LEISURE_MENU = [
     ("Отдых", "leisure:rest"),
     ("Сон", "leisure:sleep"),
     ("Продуктивность", "leisure:productivity"),
+    ("🧯 Анти‑прокраст.", "leisure:anti"),
 ]
 
 REST_TIME_OPTIONS = [
@@ -132,6 +133,15 @@ PRODUCTIVITY_OPTIONS = [
     ("50%", "set:productivity:50"),
     ("75%", "set:productivity:75"),
     ("100%", "set:productivity:100"),
+]
+
+PROCRASTINATION_OPTIONS = [
+    ("Соцсети", "anti:Соцсети"),
+    ("YouTube/сериалы", "anti:YouTube/сериалы"),
+    ("Игры", "anti:Игры"),
+    ("Нет ясной цели", "anti:Нет ясной цели"),
+    ("Усталость", "anti:Усталость"),
+    ("Тревога/стресс", "anti:Тревога/стресс"),
 ]
 
 FOOD_MENU = [
