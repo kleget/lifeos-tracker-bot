@@ -40,6 +40,7 @@ from menus import (
     FOOD_PROTEIN_OPTIONS,
     FOOD_GARNISH_OPTIONS,
     FOOD_SWEET_OPTIONS,
+    FOOD_OIL_OPTIONS,
     MORALE_MENU,
     MOOD_OPTIONS,
     ENERGY_OPTIONS,
@@ -1041,6 +1042,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     if data == "food:sweet":
         await show_menu(query, "Еда: сладкое", FOOD_SWEET_OPTIONS, back_to="menu:food", cols=2)
+        return
+    if data == "food:oils":
+        await show_menu(query, "Еда: масла", FOOD_OIL_OPTIONS, back_to="menu:food", cols=2)
         return
     if data == "food:custom":
         await query.answer()

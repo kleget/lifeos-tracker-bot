@@ -148,6 +148,7 @@ FOOD_MENU = [
     ("Белковое", "food:protein"),
     ("Гарнир", "food:garnish"),
     ("Сладкое", "food:sweet"),
+    ("Масла", "food:oils"),
     ("Другое", "food:custom"),
 ]
 
@@ -171,6 +172,7 @@ FOOD_GARNISH_OPTIONS = [
     ("Овсянка 50 г", "food_item:OAT_50"),
     ("Овсянка 100 г", "food_item:OAT_100"),
     ("Картоха 100 г", "food_item:POT_100"),
+    ("Кукуруза 50 г", "food_item:CORN_50"),
     ("Гречка 50 г", "food_item:BCKW_50"),
     ("Гречка 100 г", "food_item:BCKW_100"),
 ]
@@ -178,6 +180,7 @@ FOOD_GARNISH_OPTIONS = [
 FOOD_SWEET_OPTIONS = [
     ("Банан 1 шт", "food_item:BANANA_1"),
     ("Зефир 1 шт", "food_item:MARSH_1"),
+    ("Сгущенка 20 г", "food_item:COND_20"),
     ("Греческий йогурт 140 г", "food_item:GREEK_140"),
     ("Греческий йогурт 250 г", "food_item:GREEK_250"),
     ("Обезжир. йогурт 260 г", "food_item:FATFREE_260"),
@@ -187,6 +190,11 @@ FOOD_SWEET_OPTIONS = [
     ("Йогурт чудо 300 г", "food_item:CHUDO_300"),
     ("Булочка венская", "food_item:BUN_1"),
     ("Печенье америк. (1 шт)", "food_item:COOKIE_1"),
+]
+
+FOOD_OIL_OPTIONS = [
+    ("Оливковое 1 ч.л.", "food_item:OIL_OLIVE_TSP"),
+    ("Подсолнечное 1 ч.л.", "food_item:OIL_SUN_TSP"),
 ]
 
 MORALE_MENU = [
