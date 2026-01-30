@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+
+# Env files
+.env
+bot/.env
+
+# Secrets
+credentials.json
+service_account.json
+
+# OS
+.DS_Store
+Thumbs.db
