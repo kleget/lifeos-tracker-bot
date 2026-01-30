@@ -81,16 +81,16 @@ ENGLISH_OPTIONS = [
 ]
 
 CODE_MODE_OPTIONS = [
-    ("Сам", "set:code_mode:Сам"),
-    ("С помощью", "set:code_mode:С помощью"),
-    ("Вайб код", "set:code_mode:Вайб код"),
+    ("Сам", "code_mode:Сам"),
+    ("С помощью", "code_mode:С помощью"),
+    ("Вайб код", "code_mode:Вайб код"),
 ]
 
 CODE_TOPIC_OPTIONS = [
-    ("МЛ", "set:code_topic:МЛ"),
-    ("Алгосы", "set:code_topic:Алгосы"),
-    ("ВУЗ", "set:code_topic:ВУЗ"),
-    ("Веб", "set:code_topic:Веб"),
+    ("МЛ", "code_topic:МЛ"),
+    ("Алгосы", "code_topic:Алгосы"),
+    ("ВУЗ", "code_topic:ВУЗ"),
+    ("Веб", "code_topic:Веб"),
 ]
 
 READING_OPTIONS = [(f"{n} стр", f"set:reading:{n}") for n in range(10, 101, 10)]

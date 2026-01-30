@@ -79,6 +79,24 @@ class SheetsClient:
             .execute()
         )
 
+    def ensure_sheet(self, title: str, headers: list[str] | None = None) -> None:
+        result = self._execute_with_retry(
+            lambda: self._service.spreadsheets()
+            .get(spreadsheetId=self._sheet_id, fields="sheets.properties.title")
+            .execute()
+        )
+        titles = {sheet["properties"]["title"] for sheet in result.get("sheets", [])}
+        if title in titles:
+            return
+        body = {"requests": [{"addSheet": {"properties": {"title": title}}}]}
+        self._execute_with_retry(
+            lambda: self._service.spreadsheets()
+            .batchUpdate(spreadsheetId=self._sheet_id, body=body)
+            .execute()
+        )
+        if headers:
+            self.update_values(f"{title}!A1:{chr(64 + len(headers))}1", [headers])
+
     def _execute_with_retry(self, func, attempts: int = 3):
         last_err: Exception | None = None
         for attempt in range(1, attempts + 1):
@@ -214,3 +232,105 @@ class SheetsClient:
             f"Portions!A{row}:D{row}",
             [[code, product_name, description, grams]],
         )
+
+    def add_session(
+        self,
+        date_str: str,
+        time_str: str,
+        category: str,
+        subcategory: str,
+        minutes: int = 0,
+        comment: str = "",
+        *,
+        max_rows: int = 2000,
+    ) -> int:
+        row = self.find_first_empty_row("SessionLog", "A", 2, max_rows)
+        self.update_values(
+            f"SessionLog!A{row}:F{row}",
+            [[date_str, time_str, category, subcategory, minutes, comment]],
+        )
+        return row
+
+    def get_sessions(
+        self,
+        date_str: str,
+        *,
+        category: str | None = None,
+        max_rows: int = 2000,
+    ) -> list[dict]:
+        values = self.get_values(f"SessionLog!A2:F{max_rows + 1}")
+        sessions = []
+        for idx, row in enumerate(values, start=2):
+            if not row or len(row) < 3:
+                continue
+            if row[0] != date_str:
+                continue
+            if category and len(row) >= 3 and row[2] != category:
+                continue
+            sessions.append(
+                {
+                    "row": idx,
+                    "date": row[0] if len(row) > 0 else "",
+                    "time": row[1] if len(row) > 1 else "",
+                    "category": row[2] if len(row) > 2 else "",
+                    "subcategory": row[3] if len(row) > 3 else "",
+                    "minutes": row[4] if len(row) > 4 else "",
+                    "comment": row[5] if len(row) > 5 else "",
+                }
+            )
+        return sessions
+
+    def delete_last_session(
+        self,
+        date_str: str,
+        *,
+        category: str | None = None,
+        max_rows: int = 2000,
+    ) -> bool:
+        sessions = self.get_sessions(date_str, category=category, max_rows=max_rows)
+        if not sessions:
+            return False
+        last = sessions[-1]
+        row = last["row"]
+        self.update_values(f"SessionLog!A{row}:F{row}", [["", "", "", "", "", ""]])
+        return True
+
+    def clear_sessions(
+        self,
+        date_str: str,
+        *,
+        category: str | None = None,
+        max_rows: int = 2000,
+    ) -> int:
+        sessions = self.get_sessions(date_str, category=category, max_rows=max_rows)
+        if not sessions:
+            return 0
+        updates = []
+        for item in sessions:
+            row = item["row"]
+            updates.append({"range": f"SessionLog!A{row}:F{row}", "values": [["", "", "", "", "", ""]]})
+        self.batch_update_values(updates)
+        return len(sessions)
+
+    def ensure_habits_sheet(self) -> None:
+        self.ensure_sheet("Habits", headers=["Привычка", "Активна"])
+
+    def get_habits(self, *, max_rows: int = 500) -> list[str]:
+        self.ensure_habits_sheet()
+        values = self.get_values(f"Habits!A2:A{max_rows + 1}")
+        habits = []
+        for row in values:
+            if row and row[0]:
+                habits.append(str(row[0]).strip())
+        return habits
+
+    def add_habit(self, name: str, *, max_rows: int = 500) -> bool:
+        self.ensure_habits_sheet()
+        habits = self.get_habits(max_rows=max_rows)
+        normalized = name.strip().lower()
+        for existing in habits:
+            if existing.strip().lower() == normalized:
+                return False
+        row = self.find_first_empty_row("Habits", "A", 2, max_rows)
+        self.update_values(f"Habits!A{row}:B{row}", [[name.strip(), "TRUE"]])
+        return True

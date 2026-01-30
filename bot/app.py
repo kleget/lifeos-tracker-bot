@@ -223,6 +223,18 @@ def mark_set_buttons(buttons: list[tuple[str, str]], current_value: object) -> l
     return marked
 
 
+def mark_choice_buttons(buttons: list[tuple[str, str]], current_value: object, prefix: str) -> list[tuple[str, str]]:
+    current = normalize_choice(current_value)
+    marked: list[tuple[str, str]] = []
+    for label, data in buttons:
+        if data.startswith(prefix):
+            value = data.split(":", 1)[1] if ":" in data else ""
+            if normalize_choice(value) == current and current:
+                label = f"✅ {label}"
+        marked.append((label, data))
+    return marked
+
+
 def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
@@ -240,6 +252,17 @@ def normalize_choice(value: object) -> str:
     if text.endswith(".0"):
         text = text[:-2]
     return text
+
+
+def parse_habits_value(value: object) -> list[str]:
+    if value in (None, ""):
+        return []
+    text = str(value).replace(",", ";")
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
+def format_habits_value(items: list[str]) -> str:
+    return "; ".join(items)
 
 
 FIELD_HEADERS = {
@@ -310,22 +333,29 @@ def build_sport_menu(data: dict) -> list[tuple[str, str]]:
     return buttons
 
 
-def build_study_menu(data: dict) -> list[tuple[str, str]]:
+def build_study_menu(
+    data: dict,
+    *,
+    code_label: str | None = None,
+    code_selected: bool = False,
+) -> list[tuple[str, str]]:
     english = data.get("Английский_мин")
     english_label = "Английский" if english in (None, "") else f"Английский: {english}м"
 
-    code_mode = data.get("Код_режим")
-    code_topic = data.get("Код_тема")
-    code_label = "Код"
-    if code_mode or code_topic:
-        code_label = f"Код: {code_mode or '—'}/{code_topic or '—'}"
+    if code_label is None:
+        code_mode = data.get("Код_режим")
+        code_topic = data.get("Код_тема")
+        code_label = "Код"
+        if code_mode or code_topic:
+            code_label = f"Код: {code_mode or '—'}/{code_topic or '—'}"
+        code_selected = bool(code_mode or code_topic)
 
     reading = data.get("Чтение_стр")
     reading_label = "Чтение" if reading in (None, "") else f"Чтение: {reading} стр"
 
     return [
         (f"✅ {english_label}" if english not in (None, "") else english_label, "study:english"),
-        (f"✅ {code_label}" if (code_mode or code_topic) else code_label, "study:code"),
+        (f"✅ {code_label}" if code_selected else code_label, "study:code"),
         (f"✅ {reading_label}" if reading not in (None, "") else reading_label, "study:reading"),
     ]
 
@@ -358,6 +388,84 @@ def build_morale_menu(data: dict) -> list[tuple[str, str]]:
         ("О чем жалею", "morale:regret"),
         ("Отзыв о дне", "morale:review"),
     ]
+
+
+def build_code_buttons(current_mode: object) -> list[tuple[str, str]]:
+    buttons = mark_choice_buttons(CODE_MODE_OPTIONS, current_mode, "code_mode:")
+    buttons.append(("↩️ Удалить последнюю", "code:undo"))
+    buttons.append(("🗑 Очистить код за сегодня", "code:clear"))
+    return buttons
+
+
+async def build_code_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> tuple[str, list[tuple[str, str]]]:
+    sheets = get_sheets(context)
+    sessions = sheets.get_sessions(date_str, category="Код")
+    current_mode = context.user_data.get("code_mode")
+
+    lines = ["💻 Код за сегодня"]
+    if not sessions:
+        lines.append("Пока нет записей.")
+    else:
+        labels = [s.get("subcategory") for s in sessions if s.get("subcategory")]
+        max_items = 6
+        for label in labels[:max_items]:
+            lines.append(f"• {label}")
+        if len(labels) > max_items:
+            lines.append(f"… ещё {len(labels) - max_items}")
+
+    if current_mode:
+        lines.append("")
+        lines.append(f"Выбран режим: {current_mode}")
+
+    return "\n".join(lines), build_code_buttons(current_mode)
+
+
+async def build_habits_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> tuple[str, list[tuple[str, str]]]:
+    sheets = get_sheets(context)
+    habits = sheets.get_habits()
+    daily = get_daily_data(context, date_str)
+    completed = set(parse_habits_value(daily.get("Привычки")))
+
+    total = len(habits)
+    done = sum(1 for habit in habits if habit in completed)
+    if total:
+        header = f"🧠 Привычки сегодня: {done}/{total}"
+    else:
+        header = "🧠 Привычки: пока нет списка"
+
+    buttons: list[tuple[str, str]] = []
+    context.user_data["habit_list"] = habits
+    max_items = 10
+    for idx, habit in enumerate(habits[:max_items]):
+        status = "✅" if habit in completed else "⬜"
+        buttons.append((f"{status} {habit}", f"habit:toggle:{idx}"))
+    if len(habits) > max_items:
+        header = f"{header}\n… ещё {len(habits) - max_items} привычек не показаны"
+
+    buttons.append(("➕ Добавить привычку", "habit:add"))
+    if completed:
+        buttons.append(("🧹 Сбросить отметки", "habit:clear"))
+
+    return header, buttons
+
+
+def build_code_label(sessions: list[dict]) -> tuple[str, bool]:
+    if not sessions:
+        return ("Код", False)
+    labels = [s.get("subcategory") for s in sessions if s.get("subcategory")]
+    preview = ", ".join(labels[:2])
+    if len(labels) > 2:
+        preview = f"{preview} +{len(labels) - 2}"
+    label = f"Код: {preview}" if preview else f"Код: {len(labels)}"
+    return (label, True)
+
+
+async def show_study_menu(query, context: ContextTypes.DEFAULT_TYPE, date_str: str) -> None:
+    sheets = get_sheets(context)
+    daily = get_daily_data(context, date_str)
+    sessions = sheets.get_sessions(date_str, category="Код")
+    code_label, code_selected = build_code_label(sessions)
+    await show_menu(query, "Учеба:", build_study_menu(daily, code_label=code_label, code_selected=code_selected))
 
 
 def menu_config(menu_key: str, data: dict) -> tuple[str, list[tuple[str, str]], str, int]:
@@ -480,8 +588,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_menu(query, "Спорт:", build_sport_menu(daily))
         return
     if data == "menu:study":
-        daily = get_daily_data(context, date_str)
-        await show_menu(query, "Учеба:", build_study_menu(daily))
+        await show_study_menu(query, context, date_str)
         return
     if data == "menu:leisure":
         daily = get_daily_data(context, date_str)
@@ -500,7 +607,61 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_menu(query, "Моралька:", build_morale_menu(daily))
         return
     if data == "menu:habits":
-        await show_menu(query, "Привычки:", HABITS_MENU)
+        await query.answer()
+        text, buttons = await build_habits_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:main")),
+        )
+        return
+
+    if data.startswith("habit:toggle:"):
+        await query.answer()
+        try:
+            idx = int(data.split(":")[2])
+        except (IndexError, ValueError):
+            return
+        habits = context.user_data.get("habit_list") or sheets.get_habits()
+        if idx < 0 or idx >= len(habits):
+            return
+        habit = habits[idx]
+        daily = get_daily_data(context, date_str)
+        completed = parse_habits_value(daily.get("Привычки"))
+        if habit in completed:
+            completed = [h for h in completed if h != habit]
+        else:
+            completed.append(habit)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: format_habits_value(completed)}, max_rows=cfg.daily_max_rows)
+        text, buttons = await build_habits_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:main")),
+        )
+        return
+
+    if data == "habit:add":
+        await query.answer()
+        context.user_data["expect"] = "habit_add"
+        await query.edit_message_text("Введи название новой привычки (например, \"Зарядка\"):")
+        return
+
+    if data == "habit:clear":
+        await query.answer()
+        await query.edit_message_text(
+            "Сбросить все отметки привычек за сегодня?",
+            reply_markup=build_keyboard([("✅ Да", "habit_clear:yes"), ("↩️ Нет", "habit_clear:no")], cols=2, back=("⬅️ Назад", "menu:habits")),
+        )
+        return
+
+    if data.startswith("habit_clear:"):
+        await query.answer()
+        if data == "habit_clear:yes":
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: ""}, max_rows=cfg.daily_max_rows)
+        text, buttons = await build_habits_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:main")),
+        )
         return
 
     if data == "sport:training":
@@ -561,15 +722,88 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_menu(query, "Английский:", mark_set_buttons(ENGLISH_OPTIONS, current), back_to="menu:study", cols=3)
         return
     if data == "study:code":
-        daily = get_daily_data(context, date_str)
-        current = daily.get("Код_режим")
-        await show_menu(query, "Код: режим", mark_set_buttons(CODE_MODE_OPTIONS, current), back_to="menu:study", cols=1)
+        await query.answer()
+        text, buttons = await build_code_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:study")),
+        )
         return
     if data == "study:reading":
         daily = get_daily_data(context, date_str)
         current = daily.get("Чтение_стр")
         await show_menu(query, "Чтение:", mark_set_buttons(READING_OPTIONS, current), back_to="menu:study", cols=4)
         return
+
+    if data.startswith("code_mode:"):
+        mode = data.split(":", 1)[1]
+        context.user_data["code_mode"] = mode
+        await query.answer()
+        await query.edit_message_text(
+            f"💻 Режим: {mode}\nВыбери тему:",
+            reply_markup=build_keyboard(mark_choice_buttons(CODE_TOPIC_OPTIONS, None, "code_topic:"), cols=2, back=("⬅️ Назад", "study:code")),
+        )
+        return
+
+    if data.startswith("code_topic:"):
+        topic = data.split(":", 1)[1]
+        mode = context.user_data.get("code_mode")
+        if not mode:
+            await query.answer()
+            await query.edit_message_text(
+                "Сначала выбери режим:",
+                reply_markup=build_keyboard(mark_choice_buttons(CODE_MODE_OPTIONS, None, "code_mode:"), cols=2, back=("⬅️ Назад", "menu:study")),
+            )
+            return
+        sheets.add_session(date_str, time_str(cfg.timezone), "Код", f"{mode}/{topic}", 0, "")
+        context.user_data.pop("code_mode", None)
+        text, buttons = await build_code_menu(context, date_str)
+        await query.answer()
+        await query.edit_message_text(
+            f"✅ Добавил: {mode}/{topic}\n\n{text}",
+            reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:study")),
+        )
+        return
+
+    if data == "code:undo":
+        removed = sheets.delete_last_session(date_str, category="Код")
+        text, buttons = await build_code_menu(context, date_str)
+        await query.answer()
+        prefix = "↩️ Удалил последнюю запись.\n\n" if removed else "Нет записей для удаления.\n\n"
+        await query.edit_message_text(
+            f"{prefix}{text}",
+            reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:study")),
+        )
+        return
+
+    if data == "code:clear":
+        await query.answer()
+        context.user_data["pending_code_clear"] = True
+        await query.edit_message_text(
+            "Удалить все записи кода за сегодня?",
+            reply_markup=build_keyboard([("✅ Да", "code_clear:yes"), ("↩️ Нет", "code_clear:no")], cols=2, back=("⬅️ Назад", "menu:study")),
+        )
+        return
+
+    if data.startswith("code_clear:"):
+        await query.answer()
+        if data == "code_clear:yes":
+            sheets.clear_sessions(date_str, category="Код")
+            context.user_data.pop("pending_code_clear", None)
+            text, buttons = await build_code_menu(context, date_str)
+            await query.edit_message_text(
+                f"🗑 Очистил записи.\n\n{text}",
+                reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:study")),
+            )
+            return
+        if data == "code_clear:no":
+            context.user_data.pop("pending_code_clear", None)
+            text, buttons = await build_code_menu(context, date_str)
+            await query.edit_message_text(
+                text,
+                reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:study")),
+            )
+            return
 
     if data == "leisure:rest":
         daily = get_daily_data(context, date_str)
@@ -683,8 +917,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         if field_key == "code_topic":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["code_topic"]: value}, max_rows=cfg.daily_max_rows)
-            daily = get_daily_data(context, date_str)
-            await show_menu(query, "Учеба:", build_study_menu(daily))
+            await show_study_menu(query, context, date_str)
             return
         if field_key == "rest_time":
             sheets.update_daily_fields(date_str, {COLUMN_MAP["rest_time"]: value}, max_rows=cfg.daily_max_rows)
@@ -736,8 +969,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await show_menu(query, "Спорт:", build_sport_menu(daily))
                 return
             if field_key in {"english", "reading"}:
-                daily = get_daily_data(context, date_str)
-                await show_menu(query, "Учеба:", build_study_menu(daily))
+                await show_study_menu(query, context, date_str)
                 return
             if field_key == "productivity":
                 daily = get_daily_data(context, date_str)
@@ -810,6 +1042,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: text}, max_rows=cfg.daily_max_rows)
         context.user_data.clear()
         await update.message.reply_text("✅ Записал.")
+        return
+
+    if expect == "habit_add":
+        added = sheets.add_habit(text)
+        context.user_data.clear()
+        if added:
+            await update.message.reply_text("✅ Привычка добавлена.")
+        else:
+            await update.message.reply_text("ℹ️ Такая привычка уже есть.")
+        text_menu, buttons = await build_habits_menu(context, date_str)
+        await update.message.reply_text(text_menu, reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:main")))
         return
 
     if expect == "custom_name":
@@ -888,10 +1131,13 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     study_parts = []
     if data.get("Английский_мин"):
         study_parts.append(f"англ {data.get('Английский_мин')}м")
-    if data.get("Код_режим") or data.get("Код_тема"):
-        mode = data.get("Код_режим") or "—"
-        topic = data.get("Код_тема") or "—"
-        study_parts.append(f"код {mode}/{topic}")
+    code_sessions = sheets.get_sessions(date_str, category="Код")
+    if code_sessions:
+        labels = [s.get("subcategory") for s in code_sessions if s.get("subcategory")]
+        preview = ", ".join(labels[:2])
+        if len(labels) > 2:
+            preview = f"{preview} +{len(labels) - 2}"
+        study_parts.append(f"код {preview}")
     if data.get("Чтение_стр"):
         study_parts.append(f"чтение {data.get('Чтение_стр')} стр")
     if study_parts:
@@ -921,8 +1167,17 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         lines.append(f"📝 О чем жалею: {data.get('О_чем_жалею')}")
     if data.get("Отзыв_о_дне"):
         lines.append(f"🗒 Отзыв: {data.get('Отзыв_о_дне')}")
-    if data.get("Привычки"):
-        lines.append(f"🧠 Привычки: {data.get('Привычки')}")
+    habits_value = data.get("Привычки")
+    habits_list = parse_habits_value(habits_value)
+    if habits_list:
+        try:
+            total_habits = len(sheets.get_habits())
+            if total_habits:
+                lines.append(f"🧠 Привычки: {len(habits_list)}/{total_habits}")
+            else:
+                lines.append(f"🧠 Привычки: {', '.join(habits_list)}")
+        except Exception:
+            lines.append(f"🧠 Привычки: {', '.join(habits_list)}")
 
     missing = data.get("Не_заполнено")
     if missing not in (None, ""):
