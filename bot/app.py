@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -82,6 +83,9 @@ COLUMN_MAP = {
 }
 
 NUMERIC_FIELDS = {"cardio", "english", "reading", "productivity"}
+
+FORMULA_COLUMNS = ["U", "V", "W", "X", "Y", "Z"]
+FORMULA_TEMPLATE_RANGE = "Daily!U2:Z2"
 
 
 def get_now(tz_name: str) -> datetime:
@@ -190,6 +194,77 @@ def display_training(value: object) -> str | None:
     return str(value)
 
 
+def reading_is_set(value: object) -> bool:
+    return value not in (None, "")
+
+
+def format_reading_label(value: object) -> str:
+    if value in (None, ""):
+        return "Чтение"
+    text = normalize_choice(value)
+    if text in {"0", "0.0"}:
+        return "Чтение: не читал"
+    return f"Чтение: {text} стр"
+
+
+_CELL_REF_RE = re.compile(r"(\$?[A-Z]{1,2})(\$?)2\b")
+
+
+def adjust_formula_row(formula: str, row_index: int) -> str:
+    if row_index == 2:
+        return formula
+
+    def repl(match: re.Match) -> str:
+        col = match.group(1)
+        row_abs = match.group(2)
+        return f"{col}{row_abs}{row_index}"
+
+    return _CELL_REF_RE.sub(repl, formula)
+
+
+def get_daily_formula_templates(context: ContextTypes.DEFAULT_TYPE) -> list[str]:
+    cached = context.application.bot_data.get("daily_formula_templates")
+    if cached:
+        return cached
+    sheets = get_sheets(context)
+    rows = sheets.get_values(FORMULA_TEMPLATE_RANGE, value_render_option="FORMULA")
+    if not rows or not rows[0]:
+        return []
+    templates = rows[0] + [""] * (len(FORMULA_COLUMNS) - len(rows[0]))
+    context.application.bot_data["daily_formula_templates"] = templates
+    return templates
+
+
+def ensure_daily_formulas(context: ContextTypes.DEFAULT_TYPE, row_index: int) -> bool:
+    templates = get_daily_formula_templates(context)
+    if not templates:
+        return False
+    sheets = get_sheets(context)
+    existing = sheets.get_values(
+        f"Daily!{FORMULA_COLUMNS[0]}{row_index}:{FORMULA_COLUMNS[-1]}{row_index}",
+        value_render_option="FORMULA",
+    )
+    row_vals = existing[0] if existing else []
+    updates = []
+    for idx, tmpl in enumerate(templates):
+        if not tmpl:
+            continue
+        current = row_vals[idx] if idx < len(row_vals) else ""
+        if current not in (None, ""):
+            continue
+        formula = adjust_formula_row(tmpl, row_index)
+        updates.append(
+            {
+                "range": f"Daily!{FORMULA_COLUMNS[idx]}{row_index}",
+                "values": [[formula]],
+            }
+        )
+    if updates:
+        sheets.batch_update_values(updates)
+        return True
+    return False
+
+
 def day_targets(training_value: str | None) -> dict | None:
     if training_value in {"Ноги", "Низ", "Верх"}:
         return {
@@ -243,6 +318,10 @@ def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
     row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
     if not row:
         return {}
+    if ensure_daily_formulas(context, row.row_index):
+        row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
+        if not row:
+            return {}
     values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
     return dict(zip(DAILY_HEADERS, values))
 
@@ -353,12 +432,12 @@ def build_study_menu(
         code_selected = bool(code_mode or code_topic)
 
     reading = data.get("Чтение_стр")
-    reading_label = "Чтение" if reading in (None, "") else f"Чтение: {reading} стр"
+    reading_label = format_reading_label(reading)
 
     return [
         (f"✅ {english_label}" if english not in (None, "") else english_label, "study:english"),
         (f"✅ {code_label}" if code_selected else code_label, "study:code"),
-        (f"✅ {reading_label}" if reading not in (None, "") else reading_label, "study:reading"),
+        (f"✅ {reading_label}" if reading_is_set(reading) else reading_label, "study:reading"),
     ]
 
 
@@ -1327,6 +1406,10 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
     if not row:
         return "📅 Сегодня пока нет данных."
+    if ensure_daily_formulas(context, row.row_index):
+        row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
+        if not row:
+            return "📅 Сегодня пока нет данных."
 
     values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
     data = dict(zip(DAILY_HEADERS, values))
@@ -1363,8 +1446,10 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         if len(labels) > 2:
             preview = f"{preview} +{len(labels) - 2}"
         study_parts.append(f"код {preview}")
-    if data.get("Чтение_стр"):
-        study_parts.append(f"чтение {data.get('Чтение_стр')} стр")
+    reading_value = data.get("Чтение_стр")
+    if reading_is_set(reading_value):
+        label = "не читал" if normalize_choice(reading_value) in {"0", "0.0"} else f"{reading_value} стр"
+        study_parts.append(f"чтение {label}")
     if study_parts:
         lines.append(f"📚 Учеба: {', '.join(study_parts)}")
 
@@ -1425,6 +1510,10 @@ async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) 
     row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
     if not row:
         return "🍽 Еда: сегодня пока нет данных."
+    if ensure_daily_formulas(context, row.row_index):
+        row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
+        if not row:
+            return "🍽 Еда: сегодня пока нет данных."
 
     values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
     data = dict(zip(DAILY_HEADERS, values))

@@ -92,7 +92,9 @@ CODE_TOPIC_OPTIONS = [
     ("Веб", "code_topic:Веб"),
 ]
 
-READING_OPTIONS = [(f"{n} стр", f"set:reading:{n}") for n in range(10, 101, 10)]
+READING_OPTIONS = [("Не читал", "set:reading:0")] + [
+    (f"{n} стр", f"set:reading:{n}") for n in range(10, 101, 10)
+]
 
 LEISURE_MENU = [
     ("Отдых", "leisure:rest"),
