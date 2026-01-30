@@ -15,6 +15,7 @@ bot/.env
 # Secrets
 credentials.json
 service_account.json
+scriptforvk-0f70c8d47c45.json
 
 # OS
 .DS_Store

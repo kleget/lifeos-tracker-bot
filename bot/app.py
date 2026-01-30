@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import logging
+import sys
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from telegram import Update
 from telegram.ext import (
@@ -81,7 +83,11 @@ NUMERIC_FIELDS = {"cardio", "english", "reading", "productivity"}
 
 
 def get_now(tz_name: str) -> datetime:
-    return datetime.now(ZoneInfo(tz_name))
+    try:
+        return datetime.now(ZoneInfo(tz_name))
+    except ZoneInfoNotFoundError:
+        LOGGER.warning("Timezone '%s' not found. Falling back to local time.", tz_name)
+        return datetime.now()
 
 
 def today_str(tz_name: str) -> str:
@@ -128,6 +134,54 @@ def parse_numbers(text: str, count: int) -> list[float]:
         raise ValueError
     return [float(p) for p in parts]
 
+def parse_sheet_number(value: object) -> float:
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).replace(" ", "").replace(",", ".")
+    num = ""
+    for ch in text:
+        if ch.isdigit() or ch in {".", "-"}:
+            num += ch
+        elif num:
+            break
+    try:
+        return float(num)
+    except ValueError:
+        return 0.0
+
+
+def fmt_num(value: float, digits: int = 0) -> str:
+    if digits <= 0:
+        return str(int(round(value)))
+    formatted = f"{value:.{digits}f}".rstrip("0").rstrip(".")
+    return formatted.replace(".", ",")
+
+
+def fmt_value(value: object) -> str:
+    return str(value) if value not in (None, "") else "—"
+
+
+def day_targets(training_value: str | None) -> dict | None:
+    if training_value in {"Ноги", "Верх"}:
+        return {
+            "label": "Тренировочный день",
+            "kcal": (1900, 2000),
+            "protein": (125, 135),
+            "fat": (55, 65),
+            "carb": (180, 210),
+        }
+    if training_value in {"Отдых", "Пропустил"}:
+        return {
+            "label": "День отдыха",
+            "kcal": (1700, 1800),
+            "protein": (120, 130),
+            "fat": (55, 65),
+            "carb": (140, 170),
+        }
+    return None
+
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(context, update.effective_user.id if update.effective_user else None):
@@ -157,7 +211,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_menu(query, "Досуг:", LEISURE_MENU)
         return
     if data == "menu:food":
-        await show_menu(query, "Еда:", FOOD_MENU)
+        await query.answer()
+        summary = await build_food_summary(context, date_str)
+        await query.edit_message_text(
+            summary,
+            reply_markup=build_keyboard(FOOD_MENU, cols=2, back=("⬅️ Назад", "menu:main")),
+        )
         return
     if data == "menu:morale":
         await show_menu(query, "Моралька:", MORALE_MENU)
@@ -416,21 +475,153 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     sheets = get_sheets(context)
     row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
     if not row:
-        return "Сегодня пока нет данных."
+        return "📅 Сегодня пока нет данных."
 
     values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
     data = dict(zip(DAILY_HEADERS, values))
 
-    def fmt(value: str) -> str:
-        return value if value not in (None, "") else "—"
+    kcal = parse_sheet_number(data.get("Ккал"))
+    protein = parse_sheet_number(data.get("Белки"))
+    fat = parse_sheet_number(data.get("Жиры"))
+    carbs = parse_sheet_number(data.get("Угли"))
 
-    summary = [
-        f"Дата: {date_str}",
-        f"Качество: {fmt(data.get('Качество_дня'))}",
-        f"Ккал/Б/Ж/У: {fmt(data.get('Ккал'))}/{fmt(data.get('Белки'))}/{fmt(data.get('Жиры'))}/{fmt(data.get('Угли'))}",
-        f"Не заполнено: {fmt(data.get('Не_заполнено'))}",
+    lines = [
+        f"📅 Сегодня: {date_str}",
+        f"⭐ Качество дня: {fmt_value(data.get('Качество_дня'))}",
+        f"🍽 КБЖУ: {fmt_num(kcal)} ккал | Б {fmt_num(protein, 1)} | Ж {fmt_num(fat, 1)} | У {fmt_num(carbs, 1)}",
     ]
-    return "\n".join(summary)
+
+    sport_parts = []
+    if data.get("Тренировка"):
+        sport_parts.append(str(data.get("Тренировка")))
+    if data.get("Кардио_мин"):
+        sport_parts.append(f"кардио {data.get('Кардио_мин')}м")
+    if data.get("Шаги_категория"):
+        sport_parts.append(f"шаги {data.get('Шаги_категория')}")
+    if sport_parts:
+        lines.append(f"🏋️ Спорт: {', '.join(sport_parts)}")
+
+    study_parts = []
+    if data.get("Английский_мин"):
+        study_parts.append(f"англ {data.get('Английский_мин')}м")
+    if data.get("Код_режим") or data.get("Код_тема"):
+        mode = data.get("Код_режим") or "—"
+        topic = data.get("Код_тема") or "—"
+        study_parts.append(f"код {mode}/{topic}")
+    if data.get("Чтение_стр"):
+        study_parts.append(f"чтение {data.get('Чтение_стр')} стр")
+    if study_parts:
+        lines.append(f"📚 Учеба: {', '.join(study_parts)}")
+
+    sleep_parts = []
+    if data.get("Сон_часы"):
+        sleep_parts.append(f"{data.get('Сон_часы')} ч")
+    if data.get("Режим"):
+        sleep_parts.append(f"режим {data.get('Режим')}")
+    if sleep_parts:
+        lines.append(f"🌙 Сон: {', '.join(sleep_parts)}")
+
+    leisure_parts = []
+    if data.get("Продуктивность"):
+        leisure_parts.append(f"продуктивность {data.get('Продуктивность')}%")
+    if data.get("Настроение"):
+        leisure_parts.append(f"настроение {data.get('Настроение')}")
+    if data.get("Энергия"):
+        leisure_parts.append(f"энергия {data.get('Энергия')}")
+    if leisure_parts:
+        lines.append(f"🙂 Моралька: {', '.join(leisure_parts)}")
+
+    if data.get("Вес"):
+        lines.append(f"⚖️ Вес: {data.get('Вес')}")
+    if data.get("О_чем_жалею"):
+        lines.append(f"📝 О чем жалею: {data.get('О_чем_жалею')}")
+    if data.get("Отзыв_о_дне"):
+        lines.append(f"🗒 Отзыв: {data.get('Отзыв_о_дне')}")
+    if data.get("Привычки"):
+        lines.append(f"🧠 Привычки: {data.get('Привычки')}")
+
+    missing = data.get("Не_заполнено")
+    if missing not in (None, ""):
+        lines.append(f"⚠️ Не заполнено: {missing}")
+
+    return "\n".join(lines)
+
+
+async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> str:
+    cfg = context.application.bot_data["config"]
+    sheets = get_sheets(context)
+    row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
+    if not row:
+        return "🍽 Еда: сегодня пока нет данных."
+
+    values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
+    data = dict(zip(DAILY_HEADERS, values))
+
+    kcal = parse_sheet_number(data.get("Ккал"))
+    protein = parse_sheet_number(data.get("Белки"))
+    fat = parse_sheet_number(data.get("Жиры"))
+    carbs = parse_sheet_number(data.get("Угли"))
+
+    lines = [
+        "🍽 Еда за сегодня",
+        f"• Ккал: {fmt_num(kcal)}",
+        f"• Б/Ж/У: {fmt_num(protein, 1)} / {fmt_num(fat, 1)} / {fmt_num(carbs, 1)}",
+    ]
+
+    targets = day_targets(data.get("Тренировка"))
+    if not targets:
+        lines.append("")
+        lines.append("⚠️ Тип дня не задан. Выбери тренировку/отдых в разделе «Спорт»,")
+        lines.append("чтобы увидеть цели по КБЖУ.")
+        return "\n".join(lines)
+
+    kcal_min, kcal_max = targets["kcal"]
+    p_min, p_max = targets["protein"]
+    f_min, f_max = targets["fat"]
+    c_min, c_max = targets["carb"]
+
+    lines.append("")
+    lines.append(f"🎯 Цель ({targets['label']})")
+    lines.append(f"• Ккал: {kcal_min}–{kcal_max}")
+    lines.append(f"• Б/Ж/У: {p_min}–{p_max} / {f_min}–{f_max} / {c_min}–{c_max}")
+
+    def delta_to_min(value: float, min_val: float) -> float:
+        return max(0.0, min_val - value)
+
+    def delta_to_max(value: float, max_val: float) -> float:
+        return max(0.0, max_val - value)
+
+    def over_max(value: float, max_val: float) -> float:
+        return max(0.0, value - max_val)
+
+    d_kcal_min = delta_to_min(kcal, kcal_min)
+    d_p_min = delta_to_min(protein, p_min)
+    d_f_min = delta_to_min(fat, f_min)
+    d_c_min = delta_to_min(carbs, c_min)
+
+    d_kcal_max = delta_to_max(kcal, kcal_max)
+    d_p_max = delta_to_max(protein, p_max)
+    d_f_max = delta_to_max(fat, f_max)
+    d_c_max = delta_to_max(carbs, c_max)
+
+    over_kcal = over_max(kcal, kcal_max)
+    over_p = over_max(protein, p_max)
+    over_f = over_max(fat, f_max)
+    over_c = over_max(carbs, c_max)
+
+    lines.append("")
+    lines.append(
+        f"⏳ До минимума: Ккал +{fmt_num(d_kcal_min)} | Б +{fmt_num(d_p_min, 1)} | Ж +{fmt_num(d_f_min, 1)} | У +{fmt_num(d_c_min, 1)}"
+    )
+    lines.append(
+        f"📈 До максимума: Ккал {fmt_num(d_kcal_max)} | Б {fmt_num(d_p_max, 1)} | Ж {fmt_num(d_f_max, 1)} | У {fmt_num(d_c_max, 1)}"
+    )
+    if any(x > 0 for x in (over_kcal, over_p, over_f, over_c)):
+        lines.append(
+            f"🚨 Перебор: Ккал +{fmt_num(over_kcal)} | Б +{fmt_num(over_p, 1)} | Ж +{fmt_num(over_f, 1)} | У +{fmt_num(over_c, 1)}"
+        )
+
+    return "\n".join(lines)
 
 
 def main() -> None:
@@ -447,6 +638,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     LOGGER.info("Bot started")
+    if sys.platform.startswith("win"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     app.run_polling()
 
 
