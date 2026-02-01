@@ -37,7 +37,9 @@ class Database:
                     training TEXT,
                     cardio_min INTEGER,
                     steps_category TEXT,
+                    steps_count INTEGER,
                     english_min INTEGER,
+                    ml_min INTEGER,
                     code_mode TEXT,
                     code_topic TEXT,
                     reading_pages INTEGER,
@@ -52,7 +54,14 @@ class Database:
                     weight REAL,
                     regret TEXT,
                     review TEXT,
-                    habits TEXT
+                    habits TEXT,
+                    active_kcal REAL,
+                    food_tracked INTEGER,
+                    food_kcal REAL,
+                    food_protein REAL,
+                    food_fat REAL,
+                    food_carb REAL,
+                    food_source TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS food_items (
@@ -105,6 +114,30 @@ class Database:
                 """
             )
             self._conn.commit()
+            self._ensure_columns(
+                "daily",
+                {
+                    "steps_count": "INTEGER",
+                    "ml_min": "INTEGER",
+                    "active_kcal": "REAL",
+                    "food_tracked": "INTEGER",
+                    "food_kcal": "REAL",
+                    "food_protein": "REAL",
+                    "food_fat": "REAL",
+                    "food_carb": "REAL",
+                    "food_source": "TEXT",
+                },
+            )
+
+    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        cur = self._conn.execute(f"PRAGMA table_info({table})")
+        existing = {row["name"] for row in cur.fetchall()}
+        to_add = [(name, col_type) for name, col_type in columns.items() if name not in existing]
+        if not to_add:
+            return
+        for name, col_type in to_add:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+        self._conn.commit()
 
     def seed_from_csv(self, food_items_csv: str, portions_csv: str) -> None:
         food_items_csv_path = Path(food_items_csv)

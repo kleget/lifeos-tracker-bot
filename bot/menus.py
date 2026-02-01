@@ -66,6 +66,7 @@ STEPS_OPTIONS = [
 
 STUDY_MENU = [
     ("Английский", "study:english"),
+    ("ML", "study:ml"),
     ("Код", "study:code"),
     ("Чтение", "study:reading"),
 ]
@@ -77,6 +78,15 @@ ENGLISH_OPTIONS = [
     ("1ч", "set:english:60"),
     ("1.5ч", "set:english:90"),
     ("2ч", "set:english:120"),
+]
+
+ML_OPTIONS = [
+    ("30м", "set:ml:30"),
+    ("1ч", "set:ml:60"),
+    ("1.5ч", "set:ml:90"),
+    ("2ч", "set:ml:120"),
+    ("2.5ч", "set:ml:150"),
+    ("3ч", "set:ml:180"),
 ]
 
 CODE_MODE_OPTIONS = [

@@ -30,6 +30,13 @@
 ## Экспорт
 - Команда `/export` отдаёт архив CSV (дневные итоги, еда, сессии, привычки, справочники).
 
+## Синк (Health Connect)
+Для личного Android‑клиента можно отправлять данные через команду:
+```
+/sync {"date":"2026-02-01","steps":12345,"active_kcal":420,"weight":72.4,"sleep_hours":7.2,"english_min":30,"ml_min":60,"food":{"kcal":1800,"protein":130,"fat":60,"carb":170}}
+```
+Поддерживаются поля: `steps`, `active_kcal`, `weight`, `sleep_hours`, `english_min`, `ml_min`, `food` (kcal/protein/fat/carb).
+
 ## Как пользоваться
 - `/start` открывает главное меню.
 - **Еда**: выбираешь продукт → количество порций.

@@ -3,6 +3,7 @@
 import asyncio
 import csv
 import io
+import json
 import logging
 import sys
 import zipfile
@@ -29,6 +30,7 @@ from menus import (
     STEPS_OPTIONS,
     STUDY_MENU,
     ENGLISH_OPTIONS,
+    ML_OPTIONS,
     CODE_MODE_OPTIONS,
     CODE_TOPIC_OPTIONS,
     READING_OPTIONS,
@@ -60,16 +62,50 @@ LOGGER = logging.getLogger("lifeos-bot")
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 DAILY_HEADERS = [
-    'Дата','Тренировка','Кардио_мин','Шаги_категория','Английский_мин','Код_режим','Код_тема','Чтение_стр',
-    'Отдых_время','Отдых_тип','Сон_отбой','Сон_часы','Режим','Продуктивность','Настроение','Энергия',
-    'Вес','О_чем_жалею','Отзыв_о_дне','Привычки','Ккал','Белки','Жиры','Угли','Качество_дня','Не_заполнено'
+    "Дата",
+    "Тренировка",
+    "Кардио_мин",
+    "Шаги_категория",
+    "Шаги_кол-во",
+    "Английский_мин",
+    "ML_мин",
+    "Код_режим",
+    "Код_тема",
+    "Чтение_стр",
+    "Отдых_время",
+    "Отдых_тип",
+    "Сон_отбой",
+    "Сон_часы",
+    "Режим",
+    "Продуктивность",
+    "Настроение",
+    "Энергия",
+    "Вес",
+    "О_чем_жалею",
+    "Отзыв_о_дне",
+    "Привычки",
+    "Активные_ккал",
+    "Еда_учтена",
+    "Еда_ккал",
+    "Еда_Б",
+    "Еда_Ж",
+    "Еда_У",
+    "Еда_источник",
+    "Ккал",
+    "Белки",
+    "Жиры",
+    "Угли",
+    "Качество_дня",
+    "Не_заполнено",
 ]
 
 COLUMN_MAP = {
     "training": "training",
     "cardio": "cardio_min",
     "steps": "steps_category",
+    "steps_count": "steps_count",
     "english": "english_min",
+    "ml": "ml_min",
     "code_mode": "code_mode",
     "code_topic": "code_topic",
     "reading": "reading_pages",
@@ -85,13 +121,22 @@ COLUMN_MAP = {
     "regret": "regret",
     "review": "review",
     "habits": "habits",
+    "active_kcal": "active_kcal",
+    "food_tracked": "food_tracked",
+    "food_kcal": "food_kcal",
+    "food_protein": "food_protein",
+    "food_fat": "food_fat",
+    "food_carb": "food_carb",
+    "food_source": "food_source",
 }
 
 DB_TO_HEADER = {
     "training": "Тренировка",
     "cardio_min": "Кардио_мин",
     "steps_category": "Шаги_категория",
+    "steps_count": "Шаги_кол-во",
     "english_min": "Английский_мин",
+    "ml_min": "ML_мин",
     "code_mode": "Код_режим",
     "code_topic": "Код_тема",
     "reading_pages": "Чтение_стр",
@@ -107,9 +152,16 @@ DB_TO_HEADER = {
     "regret": "О_чем_жалею",
     "review": "Отзыв_о_дне",
     "habits": "Привычки",
+    "active_kcal": "Активные_ккал",
+    "food_tracked": "Еда_учтена",
+    "food_kcal": "Еда_ккал",
+    "food_protein": "Еда_Б",
+    "food_fat": "Еда_Ж",
+    "food_carb": "Еда_У",
+    "food_source": "Еда_источник",
 }
 
-NUMERIC_FIELDS = {"cardio", "english", "reading", "productivity"}
+NUMERIC_FIELDS = {"cardio", "english", "ml", "reading", "productivity"}
 
 
 def get_now(tz_name: str) -> datetime:
@@ -181,6 +233,36 @@ def parse_numbers(text: str, count: int) -> list[float]:
     if len(parts) != count:
         raise ValueError
     return [float(p) for p in parts]
+
+
+def steps_to_category(steps: float) -> str:
+    if steps < 5000:
+        return "<5k"
+    if steps < 7000:
+        return "5-7k"
+    if steps < 10000:
+        return "7-10k"
+    if steps < 12000:
+        return "10-12k"
+    if steps < 15000:
+        return "12-15k"
+    return "15k+"
+
+
+def parse_sleep_hours(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if text in {"<6", "мало"}:
+        return 5.5
+    if text in {"6-8"}:
+        return 7.0
+    if text in {">8"}:
+        return 8.5
+    try:
+        return float(text.replace(",", "."))
+    except ValueError:
+        return None
 
 def parse_sheet_number(value: object) -> float:
     if value is None or value == "":
@@ -354,57 +436,58 @@ def score_kbju(training_value: str | None, macros: dict) -> list[float]:
 
 
 def compute_quality(data: dict, macros: dict | None) -> int | None:
-    scores: list[float] = []
+    min_ok, context = day_minimum_met(data, macros)
+    if context["any_data"] is False:
+        return None
+    if not min_ok:
+        return 0
+
+    score = 60
+    english = context["english"]
+    ml = context["ml"]
+    sleep_hours = context["sleep_hours"]
+
+    study_total = english + ml
+    extra = max(0.0, study_total - 90)
+    study_bonus = int(min(30, (extra // 30) * 10))
+    score += study_bonus
 
     training = data.get("Тренировка")
-    if is_set(training):
-        scores.append(TRAINING_SCORES.get(str(training), 0))
+    if training in {"Верх", "Ноги", "Низ"}:
+        score += 10
 
-    cardio = data.get("Кардио_мин")
-    if is_set(cardio):
-        scores.append(min(parse_sheet_number(cardio) / 40, 1))
+    steps_count = parse_sheet_number(data.get("Шаги_кол-во"))
+    steps_category = data.get("Шаги_категория")
+    if steps_count >= 10000 or steps_category in {"10-12k", "12-15k", "15k+"}:
+        score += 5
 
-    steps = data.get("Шаги_категория")
-    if is_set(steps):
-        scores.append(STEPS_SCORES.get(str(steps), 0))
+    if sleep_hours >= 7:
+        score += 5
 
-    english = data.get("Английский_мин")
-    if is_set(english):
-        scores.append(min(parse_sheet_number(english) / 120, 1))
+    return min(100, score)
 
-    if is_set(data.get("Код_режим")) or is_set(data.get("Код_тема")):
-        scores.append(1)
 
-    reading = data.get("Чтение_стр")
-    if reading_is_set(reading):
-        scores.append(min(parse_sheet_number(reading) / 100, 1))
-
-    sleep_hours = data.get("Сон_часы")
-    if is_set(sleep_hours):
-        scores.append(SLEEP_HOURS_SCORES.get(str(sleep_hours), 0))
-
-    sleep_regime = data.get("Режим")
-    if is_set(sleep_regime):
-        scores.append(REGIME_SCORES.get(str(sleep_regime), 0))
-
-    productivity = data.get("Продуктивность")
-    if is_set(productivity):
-        scores.append(min(parse_sheet_number(productivity) / 100, 1))
-
-    mood = data.get("Настроение")
-    if is_set(mood):
-        scores.append(MOOD_SCORES.get(str(mood), 0))
-
-    energy = data.get("Энергия")
-    if is_set(energy):
-        scores.append(ENERGY_SCORES.get(str(energy), 0))
-
-    if macros:
-        scores.append(sum(score_kbju(training, macros)) / 4)
-
-    if not scores:
-        return None
-    return int(round(100 * (sum(scores) / len(scores))))
+def day_minimum_met(data: dict, macros: dict | None) -> tuple[bool, dict]:
+    english = parse_sheet_number(data.get("Английский_мин"))
+    ml = parse_sheet_number(data.get("ML_мин"))
+    sleep_hours = parse_sleep_hours(data.get("Сон_часы")) or 0.0
+    food_tracked = bool(macros) or bool(data.get("Еда_учтена"))
+    any_data = any(
+        [
+            is_set(data.get("Английский_мин")),
+            is_set(data.get("ML_мин")),
+            is_set(data.get("Сон_часы")),
+            food_tracked,
+        ]
+    )
+    min_ok = english >= 30 and ml >= 60 and sleep_hours >= 6 and food_tracked
+    return min_ok, {
+        "english": english,
+        "ml": ml,
+        "sleep_hours": sleep_hours,
+        "food_tracked": food_tracked,
+        "any_data": any_data,
+    }
 
 
 def compute_missing(data: dict, macros: dict | None) -> str | None:
@@ -413,10 +496,12 @@ def compute_missing(data: dict, macros: dict | None) -> str | None:
         missing.append("Тренировка")
     if not is_set(data.get("Кардио_мин")):
         missing.append("Кардио")
-    if not is_set(data.get("Шаги_категория")):
+    if not is_set(data.get("Шаги_категория")) and not is_set(data.get("Шаги_кол-во")):
         missing.append("Шаги")
     if not is_set(data.get("Английский_мин")):
         missing.append("Английский")
+    if not is_set(data.get("ML_мин")):
+        missing.append("ML")
     if not is_set(data.get("Код_режим")):
         missing.append("Код-режим")
     if not is_set(data.get("Код_тема")):
@@ -433,7 +518,7 @@ def compute_missing(data: dict, macros: dict | None) -> str | None:
         missing.append("Настроение")
     if not is_set(data.get("Энергия")):
         missing.append("Энергия")
-    if not macros:
+    if not macros and not data.get("Еда_учтена"):
         missing.append("Еда")
     return ", ".join(missing) if missing else None
 
@@ -479,7 +564,26 @@ def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
     if habits_done:
         data["Привычки"] = format_habits_value(habits_done)
 
-    macros = db.get_daily_macros(date_str)
+    # Normalize steps category from raw steps if needed
+    if not data.get("Шаги_категория") and data.get("Шаги_кол-во") is not None:
+        data["Шаги_категория"] = steps_to_category(parse_sheet_number(data.get("Шаги_кол-во")))
+
+    macros: dict | None = None
+    food_tracked = bool(data.get("Еда_учтена"))
+    if data.get("Еда_ккал") is not None:
+        macros = {
+            "kcal": parse_sheet_number(data.get("Еда_ккал")),
+            "protein": parse_sheet_number(data.get("Еда_Б")),
+            "fat": parse_sheet_number(data.get("Еда_Ж")),
+            "carb": parse_sheet_number(data.get("Еда_У")),
+        }
+        food_tracked = True
+    else:
+        macros = db.get_daily_macros(date_str)
+        if macros:
+            food_tracked = True
+
+    data["Еда_учтена"] = 1 if food_tracked else 0
     if macros:
         data["Ккал"] = macros["kcal"]
         data["Белки"] = macros["protein"]
@@ -524,6 +628,7 @@ FIELD_HEADERS = {
     "cardio": "Кардио_мин",
     "steps": "Шаги_категория",
     "english": "Английский_мин",
+    "ml": "ML_мин",
     "code_mode": "Код_режим",
     "code_topic": "Код_тема",
     "reading": "Чтение_стр",
@@ -542,6 +647,7 @@ FIELD_LABELS = {
     "cardio": "Кардио",
     "steps": "Шаги",
     "english": "Английский",
+    "ml": "ML",
     "code_mode": "Код (режим)",
     "code_topic": "Код (тема)",
     "reading": "Чтение",
@@ -596,6 +702,9 @@ def build_study_menu(
     english = data.get("Английский_мин")
     english_label = "Английский" if english in (None, "") else f"Английский: {english}м"
 
+    ml = data.get("ML_мин")
+    ml_label = "ML" if ml in (None, "") else f"ML: {ml}м"
+
     if code_label is None:
         code_mode = data.get("Код_режим")
         code_topic = data.get("Код_тема")
@@ -609,6 +718,7 @@ def build_study_menu(
 
     return [
         (f"✅ {english_label}" if english not in (None, "") else english_label, "study:english"),
+        (f"✅ {ml_label}" if ml not in (None, "") else ml_label, "study:ml"),
         (f"✅ {code_label}" if code_selected else code_label, "study:code"),
         (f"✅ {reading_label}" if reading_is_set(reading) else reading_label, "study:reading"),
     ]
@@ -854,6 +964,8 @@ def menu_config(menu_key: str, data: dict) -> tuple[str, list[tuple[str, str]], 
         return ("Шаги:", mark_set_buttons(STEPS_OPTIONS, data.get("Шаги_категория")), "menu:sport", 2)
     if menu_key == "english":
         return ("Английский:", mark_set_buttons(ENGLISH_OPTIONS, data.get("Английский_мин")), "menu:study", 3)
+    if menu_key == "ml":
+        return ("ML:", mark_set_buttons(ML_OPTIONS, data.get("ML_мин")), "menu:study", 3)
     if menu_key == "code_mode":
         return ("Код: режим", mark_set_buttons(CODE_MODE_OPTIONS, data.get("Код_режим")), "menu:study", 1)
     if menu_key == "code_topic":
@@ -1131,6 +1243,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         current = daily.get("Английский_мин")
         await show_menu(query, "Английский:", mark_set_buttons(ENGLISH_OPTIONS, current), back_to="menu:study", cols=3)
         return
+    if data == "study:ml":
+        daily = get_daily_data(context, date_str)
+        current = daily.get("ML_мин")
+        await show_menu(query, "ML:", mark_set_buttons(ML_OPTIONS, current), back_to="menu:study", cols=3)
+        return
     if data == "study:code":
         await query.answer()
         text, buttons = await build_code_menu(context, date_str)
@@ -1378,6 +1495,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "cardio": "cardio",
             "steps": "steps",
             "english": "english",
+            "ml": "ml",
             "reading": "reading",
             "productivity": "productivity",
             "mood": "mood",
@@ -1393,7 +1511,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 daily = get_daily_data(context, date_str)
                 await show_menu(query, "Спорт:", build_sport_menu(daily))
                 return
-            if field_key in {"english", "reading"}:
+            if field_key in {"english", "ml", "reading"}:
                 await show_study_menu(query, context, date_str)
                 return
             if field_key == "productivity":
@@ -1551,6 +1669,11 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         f"⭐ Качество дня: {fmt_value(data.get('Качество_дня'))}",
         f"🍽 КБЖУ: {fmt_num(kcal)} ккал | Б {fmt_num(protein, 1)} | Ж {fmt_num(fat, 1)} | У {fmt_num(carbs, 1)}",
     ]
+    min_ok, _ = day_minimum_met(data, data.get("_macros"))
+    if min_ok is True:
+        lines.append("✅ День засчитан")
+    elif min_ok is False:
+        lines.append("❌ День не засчитан")
 
     sport_parts = []
     training_display = display_training(data.get("Тренировка"))
@@ -1558,14 +1681,22 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         sport_parts.append(training_display)
     if data.get("Кардио_мин"):
         sport_parts.append(f"кардио {data.get('Кардио_мин')}м")
-    if data.get("Шаги_категория"):
-        sport_parts.append(f"шаги {data.get('Шаги_категория')}")
+    steps_cat = data.get("Шаги_категория")
+    steps_cnt = data.get("Шаги_кол-во")
+    if steps_cat:
+        sport_parts.append(f"шаги {steps_cat}")
+    elif steps_cnt not in (None, ""):
+        sport_parts.append(f"шаги {fmt_num(parse_sheet_number(steps_cnt))}")
+    if data.get("Активные_ккал"):
+        sport_parts.append(f"актив {fmt_num(parse_sheet_number(data.get('Активные_ккал')))} ккал")
     if sport_parts:
         lines.append(f"🏋️ Спорт: {', '.join(sport_parts)}")
 
     study_parts = []
     if data.get("Английский_мин"):
         study_parts.append(f"англ {data.get('Английский_мин')}м")
+    if data.get("ML_мин"):
+        study_parts.append(f"ml {data.get('ML_мин')}м")
     code_sessions = db.get_sessions(date_str, category="Код")
     if code_sessions:
         labels = [s.get("subcategory") for s in code_sessions if s.get("subcategory")]
@@ -1848,6 +1979,70 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
+def parse_sync_payload(text: str) -> dict:
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        raise ValueError("Нужен JSON после команды /sync")
+    raw = parts[1].strip()
+    return json.loads(raw)
+
+
+async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(context, update.effective_user.id if update.effective_user else None):
+        return
+    if update.message is None:
+        return
+    cfg = context.application.bot_data["config"]
+    db = get_sheets(context)
+    try:
+        payload = parse_sync_payload(update.message.text or "")
+    except Exception:
+        await update.message.reply_text("Не понял /sync. Формат: /sync {\"steps\":12345,...}")
+        return
+
+    date_str = payload.get("date") or today_str(cfg.timezone)
+    db.ensure_daily_row(date_str)
+
+    updates: dict[str, object] = {}
+    if "steps" in payload:
+        steps = int(float(payload["steps"]))
+        updates[COLUMN_MAP["steps_count"]] = steps
+        updates[COLUMN_MAP["steps"]] = steps_to_category(steps)
+    if "active_kcal" in payload:
+        updates[COLUMN_MAP["active_kcal"]] = float(payload["active_kcal"])
+    if "weight" in payload:
+        updates[COLUMN_MAP["weight"]] = float(payload["weight"])
+    if "sleep_hours" in payload:
+        updates[COLUMN_MAP["sleep_hours"]] = str(payload["sleep_hours"])
+    if "english_min" in payload:
+        updates[COLUMN_MAP["english"]] = int(float(payload["english_min"]))
+    if "ml_min" in payload:
+        updates[COLUMN_MAP["ml"]] = int(float(payload["ml_min"]))
+
+    food_payload = payload.get("food")
+    if isinstance(food_payload, dict):
+        if "kcal" in food_payload:
+            updates[COLUMN_MAP["food_kcal"]] = float(food_payload.get("kcal", 0))
+        if "protein" in food_payload:
+            updates[COLUMN_MAP["food_protein"]] = float(food_payload.get("protein", 0))
+        if "fat" in food_payload:
+            updates[COLUMN_MAP["food_fat"]] = float(food_payload.get("fat", 0))
+        if "carb" in food_payload:
+            updates[COLUMN_MAP["food_carb"]] = float(food_payload.get("carb", 0))
+        updates[COLUMN_MAP["food_tracked"]] = 1
+        updates[COLUMN_MAP["food_source"]] = payload.get("food_source", "health_connect")
+    elif "food_tracked" in payload:
+        updates[COLUMN_MAP["food_tracked"]] = 1 if payload.get("food_tracked") else 0
+        if payload.get("food_tracked"):
+            updates[COLUMN_MAP["food_source"]] = payload.get("food_source", "health_connect")
+
+    if updates:
+        db.update_daily_fields(date_str, updates)
+        await update.message.reply_text(f"✅ Синк обновил {date_str}.")
+    else:
+        await update.message.reply_text("Нет данных для синка.")
+
+
 def main() -> None:
     config = load_config()
     db_path = Path(config.db_path)
@@ -1864,6 +2059,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("export", export_command))
+    app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(handle_error)
