@@ -1,9 +1,12 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
-import re
 import sys
+import zipfile
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -49,10 +52,12 @@ from menus import (
     build_keyboard,
     quantity_keyboard,
 )
-from sheets import SheetsClient
+from db import Database
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOGGER = logging.getLogger("lifeos-bot")
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 DAILY_HEADERS = [
     'Дата','Тренировка','Кардио_мин','Шаги_категория','Английский_мин','Код_режим','Код_тема','Чтение_стр',
@@ -61,31 +66,50 @@ DAILY_HEADERS = [
 ]
 
 COLUMN_MAP = {
-    "training": "B",
-    "cardio": "C",
-    "steps": "D",
-    "english": "E",
-    "code_mode": "F",
-    "code_topic": "G",
-    "reading": "H",
-    "rest_time": "I",
-    "rest_type": "J",
-    "sleep_bed": "K",
-    "sleep_hours": "L",
-    "sleep_regime": "M",
-    "productivity": "N",
-    "mood": "O",
-    "energy": "P",
-    "weight": "Q",
-    "regret": "R",
-    "review": "S",
-    "habits": "T",
+    "training": "training",
+    "cardio": "cardio_min",
+    "steps": "steps_category",
+    "english": "english_min",
+    "code_mode": "code_mode",
+    "code_topic": "code_topic",
+    "reading": "reading_pages",
+    "rest_time": "rest_time",
+    "rest_type": "rest_type",
+    "sleep_bed": "sleep_bed",
+    "sleep_hours": "sleep_hours",
+    "sleep_regime": "sleep_regime",
+    "productivity": "productivity",
+    "mood": "mood",
+    "energy": "energy",
+    "weight": "weight",
+    "regret": "regret",
+    "review": "review",
+    "habits": "habits",
+}
+
+DB_TO_HEADER = {
+    "training": "Тренировка",
+    "cardio_min": "Кардио_мин",
+    "steps_category": "Шаги_категория",
+    "english_min": "Английский_мин",
+    "code_mode": "Код_режим",
+    "code_topic": "Код_тема",
+    "reading_pages": "Чтение_стр",
+    "rest_time": "Отдых_время",
+    "rest_type": "Отдых_тип",
+    "sleep_bed": "Сон_отбой",
+    "sleep_hours": "Сон_часы",
+    "sleep_regime": "Режим",
+    "productivity": "Продуктивность",
+    "mood": "Настроение",
+    "energy": "Энергия",
+    "weight": "Вес",
+    "regret": "О_чем_жалею",
+    "review": "Отзыв_о_дне",
+    "habits": "Привычки",
 }
 
 NUMERIC_FIELDS = {"cardio", "english", "reading", "productivity"}
-
-FORMULA_COLUMNS = ["U", "V", "W", "X", "Y", "Z"]
-FORMULA_TEMPLATE_RANGE = "Daily!U2:Z2"
 
 
 def get_now(tz_name: str) -> datetime:
@@ -104,8 +128,8 @@ def time_str(tz_name: str) -> str:
     return get_now(tz_name).strftime("%H:%M")
 
 
-def get_sheets(context: ContextTypes.DEFAULT_TYPE) -> SheetsClient:
-    return context.application.bot_data["sheets"]
+def get_sheets(context: ContextTypes.DEFAULT_TYPE) -> Database:
+    return context.application.bot_data["db"]
 
 
 def is_authorized(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:
@@ -123,7 +147,7 @@ async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
         if hasattr(update, "effective_chat") and update.effective_chat:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text="⚠️ Ошибка при обращении к таблице. Попробуй ещё раз через минуту.",
+                text="⚠️ Ошибка при обращении к базе. Попробуй ещё раз через минуту.",
             )
     except Exception:
         LOGGER.exception("Failed to send error message")
@@ -134,6 +158,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     cfg = context.application.bot_data["config"]
     date_str = today_str(cfg.timezone)
+    get_sheets(context).ensure_daily_row(date_str)
     summary = await build_daily_summary(context, date_str)
     await update.message.reply_text(
         f"{summary}\n\nВыбери раздел:",
@@ -207,62 +232,6 @@ def format_reading_label(value: object) -> str:
     return f"Чтение: {text} стр"
 
 
-_CELL_REF_RE = re.compile(r"(\$?[A-Z]{1,2})(\$?)2\b")
-
-
-def adjust_formula_row(formula: str, row_index: int) -> str:
-    if row_index == 2:
-        return formula
-
-    def repl(match: re.Match) -> str:
-        col = match.group(1)
-        row_abs = match.group(2)
-        return f"{col}{row_abs}{row_index}"
-
-    return _CELL_REF_RE.sub(repl, formula)
-
-
-def get_daily_formula_templates(context: ContextTypes.DEFAULT_TYPE) -> list[str]:
-    cached = context.application.bot_data.get("daily_formula_templates")
-    if cached:
-        return cached
-    sheets = get_sheets(context)
-    rows = sheets.get_values(FORMULA_TEMPLATE_RANGE, value_render_option="FORMULA")
-    if not rows or not rows[0]:
-        return []
-    templates = rows[0] + [""] * (len(FORMULA_COLUMNS) - len(rows[0]))
-    context.application.bot_data["daily_formula_templates"] = templates
-    return templates
-
-
-def ensure_daily_formulas(context: ContextTypes.DEFAULT_TYPE, row_index: int) -> bool:
-    templates = get_daily_formula_templates(context)
-    if not templates:
-        return False
-    sheets = get_sheets(context)
-    existing = sheets.get_values(
-        f"Daily!{FORMULA_COLUMNS[0]}{row_index}:{FORMULA_COLUMNS[-1]}{row_index}",
-        value_render_option="FORMULA",
-    )
-    row_vals = existing[0] if existing else []
-    updates = []
-    for idx, tmpl in enumerate(templates):
-        if not tmpl:
-            continue
-        current = row_vals[idx] if idx < len(row_vals) else ""
-        if current not in (None, ""):
-            continue
-        formula = adjust_formula_row(tmpl, row_index)
-        updates.append(
-            {
-                "range": f"Daily!{FORMULA_COLUMNS[idx]}{row_index}",
-                "values": [[formula]],
-            }
-        )
-    if updates:
-        sheets.batch_update_values(updates)
-        return True
-    return False
 
 
 def day_targets(training_value: str | None) -> dict | None:
@@ -274,7 +243,7 @@ def day_targets(training_value: str | None) -> dict | None:
             "fat": (55, 65),
             "carb": (180, 210),
         }
-    if training_value in {"Отдых", "Пропустил"}:
+    if training_value in {"Отдых", "Пропуск", "Пропустил"}:
         return {
             "label": "День отдыха",
             "kcal": (1700, 1800),
@@ -283,6 +252,190 @@ def day_targets(training_value: str | None) -> dict | None:
             "carb": (140, 170),
         }
     return None
+
+
+TRAINING_SCORES = {
+    "Пропуск": 0,
+    "Пропустил": 0,
+    "Отдых": 0.6,
+    "Ноги": 1,
+    "Верх": 1,
+    "Низ": 1,
+}
+
+STEPS_SCORES = {
+    "<5k": 0,
+    "5-7k": 0.25,
+    "7-10k": 0.5,
+    "10-12k": 0.75,
+    "12-15k": 0.9,
+    "15k+": 1,
+}
+
+SLEEP_HOURS_SCORES = {"<6": 0, "6-8": 1, ">8": 0.8}
+REGIME_SCORES = {"сбит": 0.3, "не сбит": 1}
+MOOD_SCORES = {
+    "Отличное": 1,
+    "Веселый": 0.85,
+    "Обычное": 0.7,
+    "Серьезный": 0.6,
+    "Раздраженный": 0.4,
+    "Беспокойный": 0.3,
+    "Злой": 0.2,
+}
+ENERGY_SCORES = {"нет": 0, "мало": 0.33, "есть": 0.66, "я живчик": 1}
+
+
+def is_set(value: object) -> bool:
+    return value not in (None, "")
+
+
+def score_range(value: float, ranges: list[tuple[float, float, float]]) -> float:
+    for min_val, max_val, score in ranges:
+        if min_val <= value <= max_val:
+            return score
+    return 0.2
+
+
+def score_kbju(training_value: str | None, macros: dict) -> list[float]:
+    kcal = macros["kcal"]
+    protein = macros["protein"]
+    fat = macros["fat"]
+    carb = macros["carb"]
+
+    training_day = training_value in {"Ноги", "Верх", "Низ"}
+
+    if training_day:
+        kcal_ranges = [(1900, 2050, 1), (1850, 1899, 0.7), (2051, 2100, 0.7)]
+        protein_ranges = [
+            (125, 135, 1),
+            (115, 124, 0.7),
+            (136, 145, 0.7),
+            (105, 114, 0.4),
+            (146, 155, 0.4),
+        ]
+        carb_ranges = [
+            (180, 210, 1),
+            (160, 179, 0.7),
+            (211, 230, 0.7),
+            (140, 159, 0.4),
+            (231, 250, 0.4),
+        ]
+    else:
+        kcal_ranges = [(1700, 1850, 1), (1650, 1699, 0.7), (1851, 1900, 0.7)]
+        protein_ranges = [
+            (120, 130, 1),
+            (110, 119, 0.7),
+            (131, 140, 0.7),
+            (100, 109, 0.4),
+            (141, 150, 0.4),
+        ]
+        carb_ranges = [
+            (140, 170, 1),
+            (120, 139, 0.7),
+            (171, 190, 0.7),
+            (100, 119, 0.4),
+            (191, 210, 0.4),
+        ]
+
+    fat_ranges = [
+        (55, 65, 1),
+        (50, 54, 0.7),
+        (66, 70, 0.7),
+        (45, 49, 0.4),
+        (71, 75, 0.4),
+    ]
+
+    kcal_score = score_range(kcal, kcal_ranges)
+    protein_score = score_range(protein, protein_ranges)
+    fat_score = score_range(fat, fat_ranges)
+    carb_score = score_range(carb, carb_ranges)
+    return [kcal_score, protein_score, fat_score, carb_score]
+
+
+def compute_quality(data: dict, macros: dict | None) -> int | None:
+    scores: list[float] = []
+
+    training = data.get("Тренировка")
+    if is_set(training):
+        scores.append(TRAINING_SCORES.get(str(training), 0))
+
+    cardio = data.get("Кардио_мин")
+    if is_set(cardio):
+        scores.append(min(parse_sheet_number(cardio) / 40, 1))
+
+    steps = data.get("Шаги_категория")
+    if is_set(steps):
+        scores.append(STEPS_SCORES.get(str(steps), 0))
+
+    english = data.get("Английский_мин")
+    if is_set(english):
+        scores.append(min(parse_sheet_number(english) / 120, 1))
+
+    if is_set(data.get("Код_режим")) or is_set(data.get("Код_тема")):
+        scores.append(1)
+
+    reading = data.get("Чтение_стр")
+    if reading_is_set(reading):
+        scores.append(min(parse_sheet_number(reading) / 100, 1))
+
+    sleep_hours = data.get("Сон_часы")
+    if is_set(sleep_hours):
+        scores.append(SLEEP_HOURS_SCORES.get(str(sleep_hours), 0))
+
+    sleep_regime = data.get("Режим")
+    if is_set(sleep_regime):
+        scores.append(REGIME_SCORES.get(str(sleep_regime), 0))
+
+    productivity = data.get("Продуктивность")
+    if is_set(productivity):
+        scores.append(min(parse_sheet_number(productivity) / 100, 1))
+
+    mood = data.get("Настроение")
+    if is_set(mood):
+        scores.append(MOOD_SCORES.get(str(mood), 0))
+
+    energy = data.get("Энергия")
+    if is_set(energy):
+        scores.append(ENERGY_SCORES.get(str(energy), 0))
+
+    if macros:
+        scores.append(sum(score_kbju(training, macros)) / 4)
+
+    if not scores:
+        return None
+    return int(round(100 * (sum(scores) / len(scores))))
+
+
+def compute_missing(data: dict, macros: dict | None) -> str | None:
+    missing: list[str] = []
+    if not is_set(data.get("Тренировка")):
+        missing.append("Тренировка")
+    if not is_set(data.get("Кардио_мин")):
+        missing.append("Кардио")
+    if not is_set(data.get("Шаги_категория")):
+        missing.append("Шаги")
+    if not is_set(data.get("Английский_мин")):
+        missing.append("Английский")
+    if not is_set(data.get("Код_режим")):
+        missing.append("Код-режим")
+    if not is_set(data.get("Код_тема")):
+        missing.append("Код-тема")
+    if not reading_is_set(data.get("Чтение_стр")):
+        missing.append("Чтение")
+    if not is_set(data.get("Сон_часы")):
+        missing.append("Сон")
+    if not is_set(data.get("Режим")):
+        missing.append("Режим")
+    if not is_set(data.get("Продуктивность")):
+        missing.append("Продуктивность")
+    if not is_set(data.get("Настроение")):
+        missing.append("Настроение")
+    if not is_set(data.get("Энергия")):
+        missing.append("Энергия")
+    if not macros:
+        missing.append("Еда")
+    return ", ".join(missing) if missing else None
 
 
 def mark_set_buttons(buttons: list[tuple[str, str]], current_value: object) -> list[tuple[str, str]]:
@@ -313,17 +466,37 @@ def mark_choice_buttons(buttons: list[tuple[str, str]], current_value: object, p
 
 
 def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
-    cfg = context.application.bot_data["config"]
-    sheets = get_sheets(context)
-    row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
+    db = get_sheets(context)
+    row = db.get_daily_row(date_str)
     if not row:
         return {}
-    if ensure_daily_formulas(context, row.row_index):
-        row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
-        if not row:
-            return {}
-    values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
-    return dict(zip(DAILY_HEADERS, values))
+
+    data: dict[str, object] = {}
+    for db_key, header in DB_TO_HEADER.items():
+        data[header] = row.get(db_key)
+
+    habits_done = db.get_habits_done(date_str)
+    if habits_done:
+        data["Привычки"] = format_habits_value(habits_done)
+
+    macros = db.get_daily_macros(date_str)
+    if macros:
+        data["Ккал"] = macros["kcal"]
+        data["Белки"] = macros["protein"]
+        data["Жиры"] = macros["fat"]
+        data["Угли"] = macros["carb"]
+    else:
+        data["Ккал"] = None
+        data["Белки"] = None
+        data["Жиры"] = None
+        data["Угли"] = None
+    data["_macros"] = macros
+
+    quality = compute_quality(data, macros)
+    data["Качество_дня"] = quality if quality is not None else ""
+    missing = compute_missing(data, macros)
+    data["Не_заполнено"] = missing or ""
+    return data
 
 
 def normalize_choice(value: object) -> str:
@@ -536,17 +709,17 @@ async def build_habits_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -
     return header, buttons
 
 
-def sync_code_fields(sheets: SheetsClient, date_str: str, *, max_rows: int = 400) -> None:
+def sync_code_fields(sheets: Database, date_str: str) -> None:
     sessions = sheets.get_sessions(date_str, category="Код")
     if not sessions:
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: "", COLUMN_MAP["code_topic"]: ""}, max_rows=max_rows)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: "", COLUMN_MAP["code_topic"]: ""})
         return
     last = sessions[-1].get("subcategory") or ""
     if "/" in last:
         mode, topic = last.split("/", 1)
     else:
         mode, topic = last, ""
-    sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: mode, COLUMN_MAP["code_topic"]: topic}, max_rows=max_rows)
+    sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: mode, COLUMN_MAP["code_topic"]: topic})
 
 
 async def build_anti_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> tuple[str, list[tuple[str, str]]]:
@@ -596,53 +769,6 @@ async def show_study_menu(query, context: ContextTypes.DEFAULT_TYPE, date_str: s
     sessions = sheets.get_sessions(date_str, category="Код")
     code_label, code_selected = build_code_label(sessions)
     await show_menu(query, "Учеба:", build_study_menu(daily, code_label=code_label, code_selected=code_selected))
-
-
-def compute_portions(portion_rows: list[list[object]], food_rows: list[list[object]]) -> list[dict]:
-    product_map: dict[str, dict[str, float]] = {}
-    for row in food_rows:
-        if len(row) < 5:
-            continue
-        name = str(row[0]).strip()
-        if not name:
-            continue
-        product_map[name] = {
-            "protein": parse_sheet_number(row[1]),
-            "fat": parse_sheet_number(row[2]),
-            "carb": parse_sheet_number(row[3]),
-            "kcal": parse_sheet_number(row[4]),
-        }
-
-    portions: list[dict] = []
-    for row in portion_rows:
-        if len(row) < 4:
-            continue
-        code = str(row[0]).strip()
-        product = str(row[1]).strip() if row[1] else ""
-        desc = str(row[2]).strip() if row[2] else ""
-        grams = parse_sheet_number(row[3])
-        if not code or not product or grams <= 0:
-            continue
-        per100 = product_map.get(product)
-        if not per100:
-            continue
-        macros = {
-            "kcal": grams / 100 * per100["kcal"],
-            "protein": grams / 100 * per100["protein"],
-            "fat": grams / 100 * per100["fat"],
-            "carb": grams / 100 * per100["carb"],
-        }
-        label = f"{product} ({desc})" if desc else product
-        portions.append(
-            {
-                "code": code,
-                "product": product,
-                "label": label,
-                "grams": grams,
-                "macros": macros,
-            }
-        )
-    return portions
 
 
 def recommend_portions(
@@ -789,6 +915,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
     date_str = today_str(cfg.timezone)
+    sheets.ensure_daily_row(date_str)
 
     if data.startswith("confirm:"):
         await query.answer()
@@ -801,7 +928,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             value = pending["value"]
             next_menu = pending.get("next_menu")
             return_menu = pending.get("return_menu", "menu:main")
-            sheets.update_daily_fields(date_str, {COLUMN_MAP[field_key]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP[field_key]: value})
             context.user_data.pop("pending_set", None)
             daily = get_daily_data(context, date_str)
             menu_key = next_menu or return_menu
@@ -876,9 +1003,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         completed = parse_habits_value(daily.get("Привычки"))
         if habit in completed:
             completed = [h for h in completed if h != habit]
+            sheets.set_habit_done(date_str, habit, False)
         else:
             completed.append(habit)
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: format_habits_value(completed)}, max_rows=cfg.daily_max_rows)
+            sheets.set_habit_done(date_str, habit, True)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: format_habits_value(completed)})
         text, buttons = await build_habits_menu(context, date_str)
         await query.edit_message_text(
             text,
@@ -903,7 +1032,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data.startswith("habit_clear:"):
         await query.answer()
         if data == "habit_clear:yes":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: ""}, max_rows=cfg.daily_max_rows)
+            sheets.clear_habits_for_date(date_str)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: ""})
         text, buttons = await build_habits_menu(context, date_str)
         await query.edit_message_text(
             text,
@@ -963,7 +1093,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return_menu="sport",
             )
             return
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: new_value}, max_rows=cfg.daily_max_rows)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: new_value})
         daily = get_daily_data(context, date_str)
         await show_menu(query, "Спорт:", build_sport_menu(daily))
         return
@@ -981,7 +1111,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return_menu="sport",
             )
             return
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: new_value}, max_rows=cfg.daily_max_rows)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["training"]: new_value})
         daily = get_daily_data(context, date_str)
         await show_menu(query, "Спорт:", build_sport_menu(daily))
         return
@@ -1036,7 +1166,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
         sheets.add_session(date_str, time_str(cfg.timezone), "Код", f"{mode}/{topic}", 0, "")
-        sync_code_fields(sheets, date_str, max_rows=cfg.daily_max_rows)
+        sync_code_fields(sheets, date_str)
         context.user_data.pop("code_mode", None)
         text, buttons = await build_code_menu(context, date_str)
         await query.answer()
@@ -1049,7 +1179,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "code:undo":
         removed = sheets.delete_last_session(date_str, category="Код")
         if removed:
-            sync_code_fields(sheets, date_str, max_rows=cfg.daily_max_rows)
+            sync_code_fields(sheets, date_str)
         text, buttons = await build_code_menu(context, date_str)
         await query.answer()
         prefix = "↩️ Удалил последнюю запись.\n\n" if removed else "Нет записей для удаления.\n\n"
@@ -1072,7 +1202,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer()
         if data == "code_clear:yes":
             sheets.clear_sessions(date_str, category="Код")
-            sync_code_fields(sheets, date_str, max_rows=cfg.daily_max_rows)
+            sync_code_fields(sheets, date_str)
             context.user_data.pop("pending_code_clear", None)
             text, buttons = await build_code_menu(context, date_str)
             await query.edit_message_text(
@@ -1205,40 +1335,40 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 return
         if field_key == "code_mode":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["code_mode"]: value})
             daily = get_daily_data(context, date_str)
             current_topic = daily.get("Код_тема")
             await show_menu(query, "Код: тема", mark_set_buttons(CODE_TOPIC_OPTIONS, current_topic), back_to="menu:study", cols=2)
             return
         if field_key == "code_topic":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["code_topic"]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["code_topic"]: value})
             await show_study_menu(query, context, date_str)
             return
         if field_key == "rest_time":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["rest_time"]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["rest_time"]: value})
             daily = get_daily_data(context, date_str)
             current_type = daily.get("Отдых_тип")
             await show_menu(query, "Отдых: тип", mark_set_buttons(REST_TYPE_OPTIONS, current_type), back_to="menu:leisure", cols=2)
             return
         if field_key == "rest_type":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["rest_type"]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["rest_type"]: value})
             daily = get_daily_data(context, date_str)
             await show_menu(query, "Досуг:", build_leisure_menu(daily))
             return
         if field_key == "sleep_bed":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_bed"]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_bed"]: value})
             daily = get_daily_data(context, date_str)
             current_hours = daily.get("Сон_часы")
             await show_menu(query, "Сон: сколько часов?", mark_set_buttons(SLEEP_HOURS_OPTIONS, current_hours), back_to="menu:leisure", cols=3)
             return
         if field_key == "sleep_hours":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_hours"]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_hours"]: value})
             daily = get_daily_data(context, date_str)
             current_regime = daily.get("Режим")
             await show_menu(query, "Сон: режим", mark_set_buttons(SLEEP_REGIME_OPTIONS, current_regime), back_to="menu:leisure", cols=2)
             return
         if field_key == "sleep_regime":
-            sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_regime"]: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {COLUMN_MAP["sleep_regime"]: value})
             daily = get_daily_data(context, date_str)
             await show_menu(query, "Досуг:", build_leisure_menu(daily))
             return
@@ -1258,7 +1388,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             col = COLUMN_MAP[key]
             if key in NUMERIC_FIELDS:
                 value = int(float(value))
-            sheets.update_daily_fields(date_str, {col: value}, max_rows=cfg.daily_max_rows)
+            sheets.update_daily_fields(date_str, {col: value})
             if field_key in {"training", "cardio", "steps"}:
                 daily = get_daily_data(context, date_str)
                 await show_menu(query, "Спорт:", build_sport_menu(daily))
@@ -1288,9 +1418,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             date_str,
             time_str(cfg.timezone),
             portion_code,
-            qty,
-            max_rows=cfg.foodlog_max_rows,
-        )
+            qty)
         await query.answer()
         await query.edit_message_text(
             f"✅ Записал еду: {portion_code} × {qty}",
@@ -1316,25 +1444,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         except ValueError:
             await update.message.reply_text("Не понял вес. Пример: 72.4")
             return
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["weight"]: weight}, max_rows=cfg.daily_max_rows)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["weight"]: weight})
         context.user_data.clear()
         await update.message.reply_text("✅ Вес записан.")
         return
 
     if expect == "regret":
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["regret"]: text}, max_rows=cfg.daily_max_rows)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["regret"]: text})
         context.user_data.clear()
         await update.message.reply_text("✅ Записал.")
         return
 
     if expect == "review":
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["review"]: text}, max_rows=cfg.daily_max_rows)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["review"]: text})
         context.user_data.clear()
         await update.message.reply_text("✅ Записал.")
         return
 
     if expect == "habits":
-        sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: text}, max_rows=cfg.daily_max_rows)
+        items = parse_habits_value(text)
+        sheets.clear_habits_for_date(date_str)
+        for item in items:
+            if not item:
+                continue
+            if item not in sheets.get_habits():
+                sheets.add_habit(item)
+            sheets.set_habit_done(date_str, item, True)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: format_habits_value(items)})
         context.user_data.clear()
         await update.message.reply_text("✅ Записал.")
         return
@@ -1392,32 +1528,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             time_str(cfg.timezone),
             code,
             1,
-            comment="custom",
-            max_rows=cfg.foodlog_max_rows,
-        )
+            comment="custom")
         context.user_data.clear()
         await update.message.reply_text("✅ Продукт добавлен и записан в еду.")
         return
 
 
 async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> str:
-    cfg = context.application.bot_data["config"]
-    sheets = get_sheets(context)
-    row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
-    if not row:
+    db = get_sheets(context)
+    data = get_daily_data(context, date_str)
+    if not data:
         return "📅 Сегодня пока нет данных."
-    if ensure_daily_formulas(context, row.row_index):
-        row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
-        if not row:
-            return "📅 Сегодня пока нет данных."
 
-    values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
-    data = dict(zip(DAILY_HEADERS, values))
-
-    kcal = parse_sheet_number(data.get("Ккал"))
-    protein = parse_sheet_number(data.get("Белки"))
-    fat = parse_sheet_number(data.get("Жиры"))
-    carbs = parse_sheet_number(data.get("Угли"))
+    macros = data.get("_macros") or {}
+    kcal = macros.get("kcal", 0.0)
+    protein = macros.get("protein", 0.0)
+    fat = macros.get("fat", 0.0)
+    carbs = macros.get("carb", 0.0)
 
     lines = [
         f"📅 Сегодня: {date_str}",
@@ -1439,7 +1566,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     study_parts = []
     if data.get("Английский_мин"):
         study_parts.append(f"англ {data.get('Английский_мин')}м")
-    code_sessions = sheets.get_sessions(date_str, category="Код")
+    code_sessions = db.get_sessions(date_str, category="Код")
     if code_sessions:
         labels = [s.get("subcategory") for s in code_sessions if s.get("subcategory")]
         preview = ", ".join(labels[:2])
@@ -1471,7 +1598,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     if leisure_parts:
         lines.append(f"🙂 Моралька: {', '.join(leisure_parts)}")
 
-    anti_sessions = sheets.get_sessions(date_str, category="Анти")
+    anti_sessions = db.get_sessions(date_str, category="Анти")
     if anti_sessions:
         reasons = [s.get("subcategory") for s in anti_sessions if s.get("subcategory")]
         preview = ", ".join(reasons[:3])
@@ -1489,7 +1616,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     habits_list = parse_habits_value(habits_value)
     if habits_list:
         try:
-            total_habits = len(sheets.get_habits())
+            total_habits = len(db.get_habits())
             if total_habits:
                 lines.append(f"🧠 Привычки: {len(habits_list)}/{total_habits}")
             else:
@@ -1505,23 +1632,16 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
 
 async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> str:
-    cfg = context.application.bot_data["config"]
-    sheets = get_sheets(context)
-    row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
-    if not row:
+    db = get_sheets(context)
+    data = get_daily_data(context, date_str)
+    if not data:
         return "🍽 Еда: сегодня пока нет данных."
-    if ensure_daily_formulas(context, row.row_index):
-        row = sheets.get_daily_row(date_str, max_rows=cfg.daily_max_rows)
-        if not row:
-            return "🍽 Еда: сегодня пока нет данных."
 
-    values = row.values + [""] * (len(DAILY_HEADERS) - len(row.values))
-    data = dict(zip(DAILY_HEADERS, values))
-
-    kcal = parse_sheet_number(data.get("Ккал"))
-    protein = parse_sheet_number(data.get("Белки"))
-    fat = parse_sheet_number(data.get("Жиры"))
-    carbs = parse_sheet_number(data.get("Угли"))
+    macros = data.get("_macros") or {}
+    kcal = macros.get("kcal", 0.0)
+    protein = macros.get("protein", 0.0)
+    fat = macros.get("fat", 0.0)
+    carbs = macros.get("carb", 0.0)
 
     lines = [
         "🍽 Еда за сегодня",
@@ -1530,26 +1650,16 @@ async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) 
     ]
 
     # List of foods eaten today
-    food_rows = sheets.get_values(f"FoodLog!A2:E{cfg.foodlog_max_rows + 1}")
-    portion_rows = sheets.get_values("Portions!A2:D")
-    food_items_rows = sheets.get_values("FoodItems!A2:E")
-    portions = compute_portions(portion_rows, food_items_rows)
-    portion_map: dict[str, dict] = {p["code"]: p for p in portions}
-
+    portions = db.list_portions()
+    food_log = db.get_food_log(date_str)
     eaten: dict[str, dict[str, float]] = {}
     eaten_products: set[str] = set()
-    for row_item in food_rows:
-        if not row_item or len(row_item) < 4:
-            continue
-        if row_item[0] != date_str:
-            continue
-        code = str(row_item[2])
-        qty = parse_sheet_number(row_item[3])
-        grams = parse_sheet_number(row_item[4]) if len(row_item) > 4 else 0.0
-        portion = portion_map.get(code)
-        label = portion["label"] if portion else code
-        if portion:
-            eaten_products.add(portion["product"])
+    for item in food_log:
+        label = item["label"]
+        qty = item.get("quantity") or 0
+        grams = item.get("grams") or 0
+        if item.get("product"):
+            eaten_products.add(item["product"])
         if label not in eaten:
             eaten[label] = {"qty": 0.0, "grams": 0.0}
         eaten[label]["qty"] += qty
@@ -1657,16 +1767,103 @@ async def build_food_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) 
     return "\n".join(lines)
 
 
+def _write_csv_to_zip(zipf: zipfile.ZipFile, name: str, rows: list[dict], headers: list[str]) -> None:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    zipf.writestr(name, buffer.getvalue().encode("utf-8"))
+
+
+def build_export_archive(context: ContextTypes.DEFAULT_TYPE) -> Path:
+    cfg = context.application.bot_data["config"]
+    db = get_sheets(context)
+    export_dir = Path(cfg.export_dir)
+    if not export_dir.is_absolute():
+        export_dir = BASE_DIR / export_dir
+    export_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = get_now(cfg.timezone).strftime("%Y%m%d_%H%M%S")
+    zip_path = export_dir / f"lifeos_export_{timestamp}.zip"
+
+    daily_rows = []
+    for date_str in db.get_daily_dates():
+        data = get_daily_data(context, date_str)
+        row = {header: data.get(header, "") for header in DAILY_HEADERS}
+        daily_rows.append(row)
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        _write_csv_to_zip(zipf, "daily_summary.csv", daily_rows, DAILY_HEADERS)
+        _write_csv_to_zip(
+            zipf,
+            "food_log.csv",
+            db.list_food_log_all(),
+            ["date", "time", "portion_code", "quantity", "comment"],
+        )
+        _write_csv_to_zip(
+            zipf,
+            "session_log.csv",
+            db.list_session_log_all(),
+            ["date", "time", "category", "subcategory", "minutes", "comment"],
+        )
+        _write_csv_to_zip(
+            zipf,
+            "food_items.csv",
+            db.list_food_items(),
+            ["name", "protein_100", "fat_100", "carb_100", "kcal_100"],
+        )
+        _write_csv_to_zip(
+            zipf,
+            "portions.csv",
+            db.list_portions_raw(),
+            ["code", "product", "description", "grams"],
+        )
+        _write_csv_to_zip(
+            zipf,
+            "habits.csv",
+            db.list_habits_raw(),
+            ["id", "name", "active"],
+        )
+        _write_csv_to_zip(
+            zipf,
+            "habit_log.csv",
+            db.list_habit_log_all(),
+            ["date", "habit", "done"],
+        )
+
+    return zip_path
+
+
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(context, update.effective_user.id if update.effective_user else None):
+        return
+    if update.message is None:
+        return
+    zip_path = build_export_archive(context)
+    with zip_path.open("rb") as f:
+        await update.message.reply_document(
+            document=f,
+            filename=zip_path.name,
+            caption="Экспорт готов ✅",
+        )
+
+
 def main() -> None:
     config = load_config()
-    sheets = SheetsClient(config.spreadsheet_id, config.service_account_file)
+    db_path = Path(config.db_path)
+    if not db_path.is_absolute():
+        db_path = BASE_DIR / db_path
+    db = Database(str(db_path))
+    db.init_schema()
+    db.seed_from_csv(str(BASE_DIR / "data/food_items.csv"), str(BASE_DIR / "data/portions.csv"))
 
     app = ApplicationBuilder().token(config.telegram_token).build()
-    app.bot_data["sheets"] = sheets
+    app.bot_data["db"] = db
     app.bot_data["config"] = config
     app.bot_data["allowed_user_id"] = config.allowed_user_id
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(handle_error)

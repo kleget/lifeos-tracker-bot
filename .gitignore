@@ -12,6 +12,13 @@ venv/
 .env
 bot/.env
 
+# SQLite / exports
+data/*.db
+exports/
+
+# Excel temp files
+~$*.xlsx
+
 # Secrets
 credentials.json
 service_account.json
