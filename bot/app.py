@@ -1829,7 +1829,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     if any([kcal, protein, fat, carbs]):
         lines.append(
-            f"🍽 {fmt_num(kcal)} К | Б {fmt_num(protein)} | Ж {fmt_num(fat)} | У {fmt_num(carbs)}"
+            f"🍽 К{fmt_num(kcal)} | Б {fmt_num(protein)} | Ж {fmt_num(fat)} | У {fmt_num(carbs)}"
         )
     else:
         lines.append("🍽 —")
