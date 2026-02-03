@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">LifeOS Sync</string>
+    <string name="label_server_url">Server URL</string>
+    <string name="label_token">Sync token</string>
+    <string name="hint_server_url">http://your-server:8088</string>
+    <string name="hint_token">SYNC_HTTP_TOKEN</string>
+    <string name="btn_save">Save &amp; Schedule</string>
+    <string name="btn_permissions">Grant Health Connect Permissions</string>
+    <string name="btn_sync_now">Sync Now</string>
+    <string name="btn_open_hc">Open Health Connect</string>
+    <string name="btn_close">Close</string>
+    <string name="privacy_title">Privacy</string>
+    <string name="privacy_body">LifeOS Sync reads your Health Connect data (steps, sleep, weight, nutrition) and sends it only to your personal server for daily tracking.</string>
+    <string name="onboarding_title">Connect Health Connect</string>
+    <string name="onboarding_body">Grant access so LifeOS Sync can read steps, sleep, weight, and nutrition data.</string>
+</resources>

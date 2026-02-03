@@ -27,3 +27,10 @@ scriptforvk-0f70c8d47c45.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Android
+android-client/.gradle/
+android-client/**/build/
+android-client/.idea/
+android-client/*.iml
+android-client/local.properties

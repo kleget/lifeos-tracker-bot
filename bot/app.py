@@ -6,9 +6,11 @@ import io
 import json
 import logging
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from telegram import Update
@@ -1987,19 +1989,7 @@ def parse_sync_payload(text: str) -> dict:
     return json.loads(raw)
 
 
-async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_authorized(context, update.effective_user.id if update.effective_user else None):
-        return
-    if update.message is None:
-        return
-    cfg = context.application.bot_data["config"]
-    db = get_sheets(context)
-    try:
-        payload = parse_sync_payload(update.message.text or "")
-    except Exception:
-        await update.message.reply_text("Не понял /sync. Формат: /sync {\"steps\":12345,...}")
-        return
-
+def apply_sync_payload(db: Database, cfg, payload: dict) -> tuple[str, dict[str, object]]:
     date_str = payload.get("date") or today_str(cfg.timezone)
     db.ensure_daily_row(date_str)
 
@@ -2038,9 +2028,116 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if updates:
         db.update_daily_fields(date_str, updates)
+    return date_str, updates
+
+
+async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(context, update.effective_user.id if update.effective_user else None):
+        return
+    if update.message is None:
+        return
+    cfg = context.application.bot_data["config"]
+    db = get_sheets(context)
+    try:
+        payload = parse_sync_payload(update.message.text or "")
+    except Exception:
+        await update.message.reply_text("Не понял /sync. Формат: /sync {\"steps\":12345,...}")
+        return
+    date_str, updates = apply_sync_payload(db, cfg, payload)
+    if updates:
         await update.message.reply_text(f"✅ Синк обновил {date_str}.")
     else:
         await update.message.reply_text("Нет данных для синка.")
+
+
+def start_sync_http_server(db: Database, cfg) -> ThreadingHTTPServer | None:
+    token = (cfg.sync_http_token or "").strip()
+    if not token:
+        LOGGER.info("Sync HTTP disabled (SYNC_HTTP_TOKEN not set).")
+        return None
+
+    host = cfg.sync_http_host or "0.0.0.0"
+    port = int(cfg.sync_http_port or 8088)
+
+    class SyncHandler(BaseHTTPRequestHandler):
+        server_version = "LifeOSSync/1.0"
+
+        def _send_json(self, status: int, payload: dict) -> None:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _get_token(self) -> str | None:
+            header_token = self.headers.get("X-Api-Key") or self.headers.get("X-Api-Token")
+            if header_token:
+                return header_token.strip()
+            auth = self.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                return auth[7:].strip()
+            return None
+
+        def log_message(self, fmt: str, *args) -> None:
+            LOGGER.info("sync-http %s - %s", self.client_address[0], fmt % args)
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path in {"/", "/health"}:
+                self._send_json(200, {"ok": True})
+                return
+            self._send_json(404, {"ok": False, "error": "not_found"})
+
+        def do_POST(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path != "/sync":
+                self._send_json(404, {"ok": False, "error": "not_found"})
+                return
+
+            if self._get_token() != token:
+                self._send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 1024 * 1024:
+                self._send_json(400, {"ok": False, "error": "invalid_body"})
+                return
+
+            raw = self.rfile.read(length)
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not isinstance(payload, dict):
+                self._send_json(400, {"ok": False, "error": "bad_payload"})
+                return
+
+            try:
+                date_str, updates = apply_sync_payload(db, cfg, payload)
+            except Exception:
+                LOGGER.exception("Sync HTTP failed")
+                self._send_json(500, {"ok": False, "error": "server_error"})
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "date": date_str,
+                    "updated": list(updates.keys()),
+                },
+            )
+
+    server = ThreadingHTTPServer((host, port), SyncHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    LOGGER.info("Sync HTTP server listening on %s:%s", host, port)
+    return server
 
 
 def main() -> None:
@@ -2067,7 +2164,12 @@ def main() -> None:
     LOGGER.info("Bot started")
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    app.run_polling()
+    sync_server = start_sync_http_server(db, config)
+    try:
+        app.run_polling()
+    finally:
+        if sync_server:
+            sync_server.shutdown()
 
 
 if __name__ == "__main__":
