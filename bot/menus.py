@@ -29,7 +29,6 @@ MAIN_MENU = [
     ("🏋️ Спорт", "menu:sport"),
     ("📚 Учеба", "menu:study"),
     ("🌤 Досуг", "menu:leisure"),
-    ("🍽 Еда", "menu:food"),
     ("🙂 Моралька", "menu:morale"),
     ("🧠 Привычки", "menu:habits"),
 ]
@@ -39,7 +38,6 @@ SPORT_MENU = [
     ("Отдых", "sport:rest"),
     ("Пропуск", "sport:skip"),
     ("Кардио", "sport:cardio"),
-    ("Шаги", "sport:steps"),
 ]
 
 TRAINING_OPTIONS = [
@@ -67,7 +65,7 @@ STEPS_OPTIONS = [
 STUDY_MENU = [
     ("Английский", "study:english"),
     ("ML", "study:ml"),
-    ("Код", "study:code"),
+    ("Алгосы", "study:algos"),
     ("Чтение", "study:reading"),
 ]
 
@@ -89,6 +87,15 @@ ML_OPTIONS = [
     ("3ч", "set:ml:180"),
 ]
 
+ALGOS_OPTIONS = [
+    ("30м", "set:algos:30"),
+    ("1ч", "set:algos:60"),
+    ("1.5ч", "set:algos:90"),
+    ("2ч", "set:algos:120"),
+    ("2.5ч", "set:algos:150"),
+    ("3ч", "set:algos:180"),
+]
+
 CODE_MODE_OPTIONS = [
     ("Сам", "code_mode:Сам"),
     ("С помощью", "code_mode:С помощью"),
@@ -108,7 +115,6 @@ READING_OPTIONS = [("Не читал", "set:reading:0")] + [
 
 LEISURE_MENU = [
     ("Отдых", "leisure:rest"),
-    ("Сон", "leisure:sleep"),
     ("Продуктивность", "leisure:productivity"),
     ("🧯 Анти‑прокраст.", "leisure:anti"),
 ]
@@ -212,7 +218,6 @@ FOOD_OIL_OPTIONS = [
 MORALE_MENU = [
     ("Настроение", "morale:mood"),
     ("Энергия", "morale:energy"),
-    ("Вес", "morale:weight"),
     ("О чем жалею", "morale:regret"),
     ("Отзыв о дне", "morale:review"),
 ]

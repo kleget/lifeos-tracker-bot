@@ -40,6 +40,7 @@ class Database:
                     steps_count INTEGER,
                     english_min INTEGER,
                     ml_min INTEGER,
+                    algo_min INTEGER,
                     code_mode TEXT,
                     code_topic TEXT,
                     reading_pages INTEGER,
@@ -119,6 +120,7 @@ class Database:
                 {
                     "steps_count": "INTEGER",
                     "ml_min": "INTEGER",
+                    "algo_min": "INTEGER",
                     "active_kcal": "REAL",
                     "food_tracked": "INTEGER",
                     "food_kcal": "REAL",

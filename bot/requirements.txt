@@ -1,3 +1,4 @@
 ﻿python-telegram-bot>=21.4,<22
 python-dotenv>=1.0,<2
 tzdata>=2024.1
+openpyxl>=3.1,<4

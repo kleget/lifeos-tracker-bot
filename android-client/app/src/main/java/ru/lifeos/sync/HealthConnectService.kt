@@ -24,6 +24,17 @@ data class SyncMetrics(
     val protein: Double?,
     val fat: Double?,
     val carbs: Double?,
+    val nutritionSource: String?,
+    val nutritionOrigins: List<String>,
+)
+
+data class NutritionTotals(
+    val calories: Double?,
+    val protein: Double?,
+    val fat: Double?,
+    val carbs: Double?,
+    val chosenOrigin: String?,
+    val origins: List<String>,
 )
 
 class HealthConnectService(private val context: Context) {
@@ -84,21 +95,7 @@ class HealthConnectService(private val context: Context) {
         )
         val steps = stepsAgg[StepsRecord.COUNT_TOTAL]
 
-        val nutritionAgg = client.aggregate(
-            AggregateRequest(
-                metrics = setOf(
-                    NutritionRecord.ENERGY_TOTAL,
-                    NutritionRecord.PROTEIN_TOTAL,
-                    NutritionRecord.TOTAL_FAT_TOTAL,
-                    NutritionRecord.TOTAL_CARBOHYDRATE_TOTAL,
-                ),
-                timeRangeFilter = TimeRangeFilter.between(startOfDay, now),
-            )
-        )
-        val calories = nutritionAgg[NutritionRecord.ENERGY_TOTAL]?.inKilocalories
-        val protein = nutritionAgg[NutritionRecord.PROTEIN_TOTAL]?.inGrams
-        val fat = nutritionAgg[NutritionRecord.TOTAL_FAT_TOTAL]?.inGrams
-        val carbs = nutritionAgg[NutritionRecord.TOTAL_CARBOHYDRATE_TOTAL]?.inGrams
+        val nutrition = readNutritionTotals(client, startOfDay, now)
 
         val sleepHours = readLatestSleepHours(client, now)
         val weightKg = readLatestWeight(client, now)
@@ -107,10 +104,12 @@ class HealthConnectService(private val context: Context) {
             steps = steps,
             sleepHours = sleepHours,
             weightKg = weightKg,
-            calories = calories,
-            protein = protein,
-            fat = fat,
-            carbs = carbs,
+            calories = nutrition.calories,
+            protein = nutrition.protein,
+            fat = nutrition.fat,
+            carbs = nutrition.carbs,
+            nutritionSource = nutrition.chosenOrigin,
+            nutritionOrigins = nutrition.origins,
         )
     }
 
@@ -151,6 +150,70 @@ class HealthConnectService(private val context: Context) {
         ).records
         val latest = records.maxByOrNull { it.time } ?: return null
         return latest.weight.inKilograms
+    }
+
+    private suspend fun readNutritionTotals(
+        client: HealthConnectClient,
+        start: Instant,
+        end: Instant
+    ): NutritionTotals {
+        val records = client.readRecords(
+            ReadRecordsRequest(
+                recordType = NutritionRecord::class,
+                timeRangeFilter = TimeRangeFilter.between(start, end),
+            )
+        ).records
+
+        val origins = records.mapNotNull { it.metadata.dataOrigin?.packageName }.distinct()
+        val fatsecretOrigin = origins.firstOrNull { it.contains("fatsecret", ignoreCase = true) }
+        val chosenOrigin = when {
+            fatsecretOrigin != null -> fatsecretOrigin
+            origins.size == 1 -> origins.first()
+            else -> null
+        }
+
+        val filtered = if (chosenOrigin != null) {
+            records.filter { it.metadata.dataOrigin?.packageName == chosenOrigin }
+        } else {
+            records
+        }
+
+        var calories = 0.0
+        var protein = 0.0
+        var fat = 0.0
+        var carbs = 0.0
+        var hasCalories = false
+        var hasProtein = false
+        var hasFat = false
+        var hasCarbs = false
+
+        for (record in filtered) {
+            record.energy?.let {
+                calories += it.inKilocalories
+                hasCalories = true
+            }
+            record.protein?.let {
+                protein += it.inGrams
+                hasProtein = true
+            }
+            record.totalFat?.let {
+                fat += it.inGrams
+                hasFat = true
+            }
+            record.totalCarbohydrate?.let {
+                carbs += it.inGrams
+                hasCarbs = true
+            }
+        }
+
+        return NutritionTotals(
+            calories = if (hasCalories) calories else null,
+            protein = if (hasProtein) protein else null,
+            fat = if (hasFat) fat else null,
+            carbs = if (hasCarbs) carbs else null,
+            chosenOrigin = chosenOrigin ?: "all",
+            origins = origins,
+        )
     }
 
     private fun resolveProviderPackageName(): String? {

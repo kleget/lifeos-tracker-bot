@@ -90,6 +90,8 @@ class MainActivity : AppCompatActivity() {
         val server = if (settings.serverUrl.isBlank()) "not set" else settings.serverUrl
         val token = if (settings.token.isBlank()) "not set" else "set"
         val provider = hc.getProviderPackageName() ?: "unknown"
+        val nutritionSource = if (settings.nutritionSource.isBlank()) "n/a" else settings.nutritionSource
+        val nutritionOrigins = if (settings.nutritionOrigins.isBlank()) "n/a" else settings.nutritionOrigins
 
         lifecycleScope.launch {
             val coreGranted = if (hc.isAvailable()) hc.hasCorePermissions() else false
@@ -100,7 +102,9 @@ class MainActivity : AppCompatActivity() {
                 append("Background: ").append(if (bgGranted) "granted" else "missing").append('\n')
                 append("Server: ").append(server).append('\n')
                 append("Token: ").append(token).append('\n')
-                append("Provider: ").append(provider)
+                append("Provider: ").append(provider).append('\n')
+                append("Nutrition source: ").append(nutritionSource).append('\n')
+                append("Nutrition origins: ").append(nutritionOrigins)
             }
             binding.txtLastSync.text = buildString {
                 append("Last sync: ").append(settings.lastSync)

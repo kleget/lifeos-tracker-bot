@@ -39,6 +39,8 @@ object SyncService {
             }
 
             val metrics = hc.readMetrics()
+            settings.nutritionSource = metrics.nutritionSource ?: ""
+            settings.nutritionOrigins = metrics.nutritionOrigins.joinToString(",")
             val missing = mutableListOf<String>()
             if (metrics.steps == null) missing.add("steps")
             if (metrics.sleepHours == null) missing.add("sleep")

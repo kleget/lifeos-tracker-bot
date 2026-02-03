@@ -28,4 +28,16 @@ class Settings(context: Context) {
         set(value) {
             prefs.edit().putString("last_error", value).apply()
         }
+
+    var nutritionSource: String
+        get() = prefs.getString("nutrition_source", "") ?: ""
+        set(value) {
+            prefs.edit().putString("nutrition_source", value).apply()
+        }
+
+    var nutritionOrigins: String
+        get() = prefs.getString("nutrition_origins", "") ?: ""
+        set(value) {
+            prefs.edit().putString("nutrition_origins", value).apply()
+        }
 }
