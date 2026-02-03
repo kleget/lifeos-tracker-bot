@@ -245,7 +245,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     get_sheets(context).ensure_daily_row(date_str)
     summary = await build_daily_summary(context, date_str)
     await update.message.reply_text(
-        f"{summary}\n\nВыбери раздел:",
+        summary,
         reply_markup=build_keyboard(MAIN_MENU, cols=2),
     )
 
@@ -1130,7 +1130,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "menu:main":
         await query.answer()
         summary = await build_daily_summary(context, date_str)
-        await query.edit_message_text(f"{summary}\n\nВыбери раздел:", reply_markup=build_keyboard(MAIN_MENU, cols=2))
+        await query.edit_message_text(summary, reply_markup=build_keyboard(MAIN_MENU, cols=2))
         return
     if data == "menu:sport":
         daily = get_daily_data(context, date_str)
@@ -1788,11 +1788,10 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     quality = fmt_value(data.get("Качество_дня"))
     if context_min["any_data"]:
-        status = "✅ День засчитан" if min_ok else "❌ День не засчитан"
-        lines.append(f"⭐ Качество дня: {quality}")
-        lines.append(status)
+        quality_prefix = "✅" if min_ok else "❌"
     else:
-        lines.append(f"⭐ Качество дня: {quality}")
+        quality_prefix = "⬜"
+    lines.append(f"{quality_prefix} Качество дня: {quality}")
 
     steps_display = fmt_steps(context_min["steps"])
     steps_square = steps_status_square(context_min["steps"])
@@ -1830,10 +1829,10 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     if any([kcal, protein, fat, carbs]):
         lines.append(
-            f"🍽 КБЖУ: {fmt_num(kcal)} ккал | Б {fmt_num(protein)} | Ж {fmt_num(fat)} | У {fmt_num(carbs)}"
+            f"🍽 {fmt_num(kcal)} К | Б {fmt_num(protein)} | Ж {fmt_num(fat)} | У {fmt_num(carbs)}"
         )
     else:
-        lines.append("🍽 КБЖУ: —")
+        lines.append("🍽 —")
 
     morale_parts = []
     if data.get("Настроение"):
@@ -1841,7 +1840,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     if data.get("Энергия"):
         morale_parts.append(f"энергия {data.get('Энергия')}")
     if morale_parts:
-        lines.append(f"🙂 Моралька: {', '.join(morale_parts)}")
+        lines.append(f"🙂 {', '.join(morale_parts)}")
 
     anti_sessions = db.get_sessions(date_str, category="Анти")
     if anti_sessions:
