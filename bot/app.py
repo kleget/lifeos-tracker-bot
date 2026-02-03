@@ -1801,6 +1801,9 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     sleep_display = "—" if sleep_hours <= 0 else f"{fmt_num(sleep_hours, 1)} ч"
     lines.append(f"😴 Сон: {sleep_display}")
 
+    if data.get("Вес") not in (None, ""):
+        lines.append(f"⚖️ Вес: {data.get('Вес')}")
+
     training_value = data.get("Тренировка")
     training_display = display_training(training_value) or (training_value if training_value else "")
     if training_value == "Пропустил":
