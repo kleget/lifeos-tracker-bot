@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openpyxl import Workbook
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -216,6 +216,24 @@ def get_sleep_start(context: ContextTypes.DEFAULT_TYPE) -> datetime | None:
         return None
 
 
+def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if data.get("_sleep_start"):
+        rows.append([InlineKeyboardButton("☀️ Я проснулся", callback_data="sleep:toggle")])
+        return InlineKeyboardMarkup(rows)
+
+    rows.append([InlineKeyboardButton("😴 Лёг спать", callback_data="sleep:toggle")])
+    row: list[InlineKeyboardButton] = []
+    for label, payload in MAIN_MENU:
+        row.append(InlineKeyboardButton(label, callback_data=payload))
+        if len(row) >= 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
 def is_authorized(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:
     allowed = context.application.bot_data.get("allowed_user_id")
     if not allowed:
@@ -244,9 +262,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     date_str = get_active_date(context)
     get_sheets(context).ensure_daily_row(date_str)
     summary = await build_daily_summary(context, date_str)
+    daily = get_daily_data(context, date_str)
     await update.message.reply_text(
         summary,
-        reply_markup=build_keyboard(MAIN_MENU, cols=2),
+        reply_markup=build_main_menu_keyboard(daily),
     )
 
 
@@ -810,7 +829,6 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
 
     return [
         (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
-        (sleep_toggle_label(data), "leisure:sleep"),
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
         (f"✅ {anti_label}" if anti_count else anti_label, "leisure:anti"),
     ]
@@ -1130,7 +1148,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "menu:main":
         await query.answer()
         summary = await build_daily_summary(context, date_str)
-        await query.edit_message_text(summary, reply_markup=build_keyboard(MAIN_MENU, cols=2))
+        daily = get_daily_data(context, date_str)
+        await query.edit_message_text(summary, reply_markup=build_main_menu_keyboard(daily))
         return
     if data == "menu:sport":
         daily = get_daily_data(context, date_str)
@@ -1412,7 +1431,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         current = daily.get("Отдых_время")
         await show_menu(query, "Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, current), back_to="menu:leisure", cols=2)
         return
-    if data == "leisure:sleep":
+    if data in {"leisure:sleep", "sleep:toggle"}:
         await query.answer()
         now = get_now(cfg.timezone)
         sleep_start_raw = sheets.get_state(STATE_SLEEP_START)
@@ -1428,9 +1447,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 },
             )
             daily = get_daily_data(context, active_day)
+            summary = await build_daily_summary(context, active_day)
             await query.edit_message_text(
-                "😴 Лег спать. Нажми «Проснулся», когда встанешь.",
-                reply_markup=build_keyboard(build_leisure_menu(daily), cols=2, back=("⬅️ Назад", "menu:main")),
+                f"{summary}\n\n😴 Лег спать. Нажми «Проснулся», когда встанешь.",
+                reply_markup=build_main_menu_keyboard(daily),
             )
             return
 
@@ -1450,10 +1470,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         sheets.set_state(STATE_SLEEP_START, None)
         sheets.set_state(STATE_SLEEP_START_DAY, None)
         sheets.set_state(STATE_ACTIVE_DAY, now.strftime("%Y-%m-%d"))
-        daily = get_daily_data(context, get_active_date(context))
+        new_day = get_active_date(context)
+        daily = get_daily_data(context, new_day)
+        summary = await build_daily_summary(context, new_day)
         await query.edit_message_text(
-            f"☀️ Проснулся. Сон: {fmt_num(hours, 1)} ч",
-            reply_markup=build_keyboard(build_leisure_menu(daily), cols=2, back=("⬅️ Назад", "menu:main")),
+            f"{summary}\n\n☀️ Проснулся. Сон: {fmt_num(hours, 1)} ч",
+            reply_markup=build_main_menu_keyboard(daily),
         )
         return
     if data == "leisure:sleep":
