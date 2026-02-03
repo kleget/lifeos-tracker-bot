@@ -41,23 +41,6 @@ object SyncService {
             val metrics = hc.readMetrics()
             settings.nutritionSource = metrics.nutritionSource ?: ""
             settings.nutritionOrigins = metrics.nutritionOrigins.joinToString(",")
-            val missing = mutableListOf<String>()
-            if (metrics.steps == null) missing.add("steps")
-            if (metrics.sleepHours == null) missing.add("sleep")
-            if (metrics.weightKg == null) missing.add("weight")
-            val nutritionOk =
-                metrics.calories != null &&
-                    metrics.protein != null &&
-                    metrics.fat != null &&
-                    metrics.carbs != null
-            if (!nutritionOk) missing.add("kbju")
-
-            if (missing.isNotEmpty()) {
-                val msg = "Missing data: ${missing.joinToString(", ")}"
-                settings.lastError = msg
-                return SyncResult(false, msg)
-            }
-
             val payload = buildPayload(metrics)
             val ok = postJson(baseUrl, token, payload)
             return if (ok) {
@@ -81,7 +64,7 @@ object SyncService {
         val date = LocalDate.now(zone).toString()
         val json = JSONObject()
         json.put("date", date)
-        json.put("steps", metrics.steps)
+        json.put("steps", metrics.steps ?: 0)
         json.put("sleep_hours", roundOne(metrics.sleepHours ?: 0.0))
         json.put("weight", roundOne(metrics.weightKg ?: 0.0))
 
