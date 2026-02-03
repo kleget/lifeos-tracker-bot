@@ -25,7 +25,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         private const val ONCE_NAME = "lifeos_sync_once"
 
         fun schedulePeriodic(context: Context) {
-            val request = PeriodicWorkRequestBuilder<SyncWorker>(30, TimeUnit.MINUTES)
+            val request = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 PERIODIC_NAME,

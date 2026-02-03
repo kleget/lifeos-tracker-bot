@@ -318,6 +318,22 @@ def fmt_steps(value: float) -> str:
     return f"{int(round(value)):,}".replace(",", " ")
 
 
+def steps_status_square(steps: float) -> str:
+    if steps <= 0:
+        return "⬜"
+    if steps < 6000:
+        return "🟥"
+    if steps < 8000:
+        return "🟧"
+    if steps < 10000:
+        return "🟨"
+    if steps < 12000:
+        return "🟩"
+    if steps < 15000:
+        return "🟦"
+    return "🟪"
+
+
 def fmt_value(value: object) -> str:
     return str(value) if value not in (None, "") else "—"
 
@@ -1690,7 +1706,8 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         lines.append(f"⭐ Качество дня: {quality}")
 
     steps_display = fmt_steps(context_min["steps"])
-    lines.append(f"🚶 Шаги: {steps_display}")
+    steps_square = steps_status_square(context_min["steps"])
+    lines.append(f"{steps_square} Шаги: {steps_display}")
 
     sleep_hours = context_min["sleep_hours"]
     sleep_display = "—" if sleep_hours <= 0 else f"{fmt_num(sleep_hours, 1)} ч"
@@ -1724,7 +1741,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     if any([kcal, protein, fat, carbs]):
         lines.append(
-            f"🍽 КБЖУ: {fmt_num(kcal)} ккал | Б {fmt_num(protein, 1)} | Ж {fmt_num(fat, 1)} | У {fmt_num(carbs, 1)}"
+            f"🍽 КБЖУ: {fmt_num(kcal)} ккал | Б {fmt_num(protein)} | Ж {fmt_num(fat)} | У {fmt_num(carbs)}"
         )
     else:
         lines.append("🍽 КБЖУ: —")
