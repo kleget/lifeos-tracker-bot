@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.contracts.HealthPermissionsRequestContract
@@ -16,6 +17,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var settings: Settings
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
+    private lateinit var notificationLauncher: ActivityResultLauncher<String>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,6 +34,9 @@ class MainActivity : AppCompatActivity() {
         ) { _ ->
             refreshStatus()
         }
+        notificationLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { _ -> }
 
         binding.btnSave.setOnClickListener {
             settings.serverUrl = binding.editServerUrl.text.toString()
@@ -39,6 +44,8 @@ class MainActivity : AppCompatActivity() {
             SyncWorker.schedulePeriodic(this)
             toast("Saved. Auto-sync every 15 min.")
             refreshStatus()
+            ensureNotificationPermission()
+            ForegroundSyncService.start(this)
         }
 
         binding.btnPermissions.setOnClickListener {
@@ -61,6 +68,8 @@ class MainActivity : AppCompatActivity() {
         refreshStatus()
         if (settings.serverUrl.isNotBlank() && settings.token.isNotBlank()) {
             SyncWorker.enqueueOnce(this)
+            ensureNotificationPermission()
+            ForegroundSyncService.start(this)
         }
     }
 
@@ -133,5 +142,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun ensureNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
     }
 }
