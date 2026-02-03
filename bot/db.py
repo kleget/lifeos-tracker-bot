@@ -112,6 +112,11 @@ class Database:
                     done INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY (date, habit_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
                 """
             )
             self._conn.commit()
@@ -128,6 +133,7 @@ class Database:
                     "food_fat": "REAL",
                     "food_carb": "REAL",
                     "food_source": "TEXT",
+                    "sleep_source": "TEXT",
                 },
             )
 
@@ -215,6 +221,23 @@ class Database:
         with self._lock:
             cur = self._conn.execute("SELECT date FROM daily ORDER BY date")
             return [row["date"] for row in cur.fetchall()]
+
+    def get_state(self, key: str) -> Optional[str]:
+        with self._lock:
+            cur = self._conn.execute("SELECT value FROM state WHERE key=?", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else None
+
+    def set_state(self, key: str, value: Optional[str]) -> None:
+        with self._lock:
+            if value is None:
+                self._conn.execute("DELETE FROM state WHERE key=?", (key,))
+            else:
+                self._conn.execute(
+                    "INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+            self._conn.commit()
 
     def add_food_log(
         self,

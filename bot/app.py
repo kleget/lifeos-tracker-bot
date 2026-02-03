@@ -189,6 +189,33 @@ def get_sheets(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.application.bot_data["db"]
 
 
+STATE_ACTIVE_DAY = "active_day"
+STATE_SLEEP_START = "sleep_start"
+STATE_SLEEP_START_DAY = "sleep_start_day"
+
+
+def get_active_date(context: ContextTypes.DEFAULT_TYPE) -> str:
+    cfg = context.application.bot_data["config"]
+    db = get_sheets(context)
+    today = today_str(cfg.timezone)
+    active = db.get_state(STATE_ACTIVE_DAY)
+    if not active:
+        db.set_state(STATE_ACTIVE_DAY, today)
+        return today
+    return active
+
+
+def get_sleep_start(context: ContextTypes.DEFAULT_TYPE) -> datetime | None:
+    db = get_sheets(context)
+    raw = db.get_state(STATE_SLEEP_START)
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def is_authorized(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:
     allowed = context.application.bot_data.get("allowed_user_id")
     if not allowed:
@@ -214,7 +241,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(context, update.effective_user.id if update.effective_user else None):
         return
     cfg = context.application.bot_data["config"]
-    date_str = today_str(cfg.timezone)
+    date_str = get_active_date(context)
     get_sheets(context).ensure_daily_row(date_str)
     summary = await build_daily_summary(context, date_str)
     await update.message.reply_text(
@@ -357,6 +384,18 @@ def format_reading_label(value: object) -> str:
     if text in {"0", "0.0"}:
         return "Чтение: не читал"
     return f"Чтение: {text} стр"
+
+
+def sleep_toggle_label(data: dict) -> str:
+    raw = data.get("_sleep_start")
+    if not raw:
+        return "😴 Лег спать"
+    try:
+        start_dt = datetime.fromisoformat(str(raw))
+        time_label = start_dt.strftime("%H:%M")
+        return f"☀️ Проснулся (c {time_label})"
+    except ValueError:
+        return "☀️ Проснулся"
 
 
 
@@ -639,6 +678,9 @@ def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
         data["Жиры"] = None
         data["Угли"] = None
     data["_macros"] = macros
+    data["_sleep_start"] = db.get_state(STATE_SLEEP_START)
+    data["_sleep_start_day"] = db.get_state(STATE_SLEEP_START_DAY)
+    data["_active_day"] = db.get_state(STATE_ACTIVE_DAY)
 
     quality = compute_quality(data)
     data["Качество_дня"] = quality if quality is not None else ""
@@ -768,6 +810,7 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
 
     return [
         (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
+        (sleep_toggle_label(data), "leisure:sleep"),
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
         (f"✅ {anti_label}" if anti_count else anti_label, "leisure:anti"),
     ]
@@ -1049,7 +1092,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
-    date_str = today_str(cfg.timezone)
+    date_str = get_active_date(context)
     sheets.ensure_daily_row(date_str)
 
     if data.startswith("confirm:"):
@@ -1370,6 +1413,50 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_menu(query, "Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, current), back_to="menu:leisure", cols=2)
         return
     if data == "leisure:sleep":
+        await query.answer()
+        now = get_now(cfg.timezone)
+        sleep_start_raw = sheets.get_state(STATE_SLEEP_START)
+        if not sleep_start_raw:
+            active_day = get_active_date(context)
+            sheets.set_state(STATE_SLEEP_START, now.isoformat())
+            sheets.set_state(STATE_SLEEP_START_DAY, active_day)
+            sheets.update_daily_fields(
+                active_day,
+                {
+                    COLUMN_MAP["sleep_bed"]: now.strftime("%H:%M"),
+                    "sleep_source": "manual",
+                },
+            )
+            daily = get_daily_data(context, active_day)
+            await query.edit_message_text(
+                "😴 Лег спать. Нажми «Проснулся», когда встанешь.",
+                reply_markup=build_keyboard(build_leisure_menu(daily), cols=2, back=("⬅️ Назад", "menu:main")),
+            )
+            return
+
+        try:
+            start_dt = datetime.fromisoformat(sleep_start_raw)
+        except ValueError:
+            start_dt = now
+        sleep_day = sheets.get_state(STATE_SLEEP_START_DAY) or get_active_date(context)
+        hours = max(0.0, (now - start_dt).total_seconds() / 3600)
+        sheets.update_daily_fields(
+            sleep_day,
+            {
+                COLUMN_MAP["sleep_hours"]: f"{hours:.1f}",
+                "sleep_source": "manual",
+            },
+        )
+        sheets.set_state(STATE_SLEEP_START, None)
+        sheets.set_state(STATE_SLEEP_START_DAY, None)
+        sheets.set_state(STATE_ACTIVE_DAY, now.strftime("%Y-%m-%d"))
+        daily = get_daily_data(context, get_active_date(context))
+        await query.edit_message_text(
+            f"☀️ Проснулся. Сон: {fmt_num(hours, 1)} ч",
+            reply_markup=build_keyboard(build_leisure_menu(daily), cols=2, back=("⬅️ Назад", "menu:main")),
+        )
+        return
+    if data == "leisure:sleep":
         daily = get_daily_data(context, date_str)
         current = daily.get("Сон_отбой")
         await show_menu(query, "Сон: во сколько заснул?", mark_set_buttons(SLEEP_BEDTIME_OPTIONS, current), back_to="menu:leisure", cols=3)
@@ -1582,7 +1669,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
-    date_str = today_str(cfg.timezone)
+    date_str = get_active_date(context)
     text = update.message.text.strip()
 
     if expect == "weight":
@@ -1695,6 +1782,8 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     min_ok, context_min = day_minimum_met(data)
 
+    cfg = context.application.bot_data["config"]
+    calendar_date = today_str(cfg.timezone)
     lines = [f"📅 Сегодня: {date_str}"]
 
     quality = fmt_value(data.get("Качество_дня"))
@@ -1782,6 +1871,9 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     missing = data.get("Не_заполнено")
     if missing not in (None, ""):
         lines.append(f"⚠️ Не хватает для зачета: {missing}")
+
+    if date_str != calendar_date:
+        lines.append("🛌 День ещё не закрыт — новый начнётся после «Проснулся».")
 
     return "\n".join(lines)
 
@@ -1997,6 +2089,7 @@ def apply_sync_payload(db: Database, cfg, payload: dict) -> tuple[str, dict[str,
     date_str = payload.get("date") or today_str(cfg.timezone)
     db.ensure_daily_row(date_str)
 
+    row = db.get_daily_row(date_str) or {}
     updates: dict[str, object] = {}
     if "steps" in payload:
         steps = int(float(payload["steps"]))
@@ -2007,7 +2100,9 @@ def apply_sync_payload(db: Database, cfg, payload: dict) -> tuple[str, dict[str,
     if "weight" in payload:
         updates[COLUMN_MAP["weight"]] = float(payload["weight"])
     if "sleep_hours" in payload:
-        updates[COLUMN_MAP["sleep_hours"]] = str(payload["sleep_hours"])
+        if row.get("sleep_source") != "manual":
+            updates[COLUMN_MAP["sleep_hours"]] = str(payload["sleep_hours"])
+            updates["sleep_source"] = "health_connect"
     if "english_min" in payload:
         updates[COLUMN_MAP["english"]] = int(float(payload["english_min"]))
     if "ml_min" in payload:

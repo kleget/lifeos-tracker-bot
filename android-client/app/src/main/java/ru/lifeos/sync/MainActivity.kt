@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
             settings.serverUrl = binding.editServerUrl.text.toString()
             settings.token = binding.editToken.text.toString()
             SyncWorker.schedulePeriodic(this)
-            toast("Saved. Auto-sync every 30 min.")
+            toast("Saved. Auto-sync every 15 min.")
             refreshStatus()
         }
 
@@ -59,6 +59,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         refreshStatus()
+        if (settings.serverUrl.isNotBlank() && settings.token.isNotBlank()) {
+            SyncWorker.enqueueOnce(this)
+        }
     }
 
     private fun requestPermissions() {
