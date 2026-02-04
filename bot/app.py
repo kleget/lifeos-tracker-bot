@@ -6,7 +6,7 @@ import logging
 import sys
 import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -291,6 +291,20 @@ def parse_number(value: str) -> float:
     return float(value)
 
 
+def parse_time_hhmm(value: str) -> tuple[int, int]:
+    text = value.strip()
+    if ":" not in text:
+        raise ValueError("time")
+    hours_str, minutes_str = text.split(":", 1)
+    if not hours_str.isdigit() or not minutes_str.isdigit():
+        raise ValueError("time")
+    hours = int(hours_str)
+    minutes = int(minutes_str)
+    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+        raise ValueError("time")
+    return hours, minutes
+
+
 def parse_numbers(text: str, count: int) -> list[float]:
     parts = [p for p in text.replace(",", ".").split() if p.strip()]
     if len(parts) != count:
@@ -561,8 +575,6 @@ def bonus_linear(value: float, min_val: float, max_val: float, max_bonus: float)
 def compute_quality(data: dict) -> int | None:
     min_ok, context = day_minimum_met(data)
     if context["any_data"] is False:
-        return None
-    if not min_ok:
         return 0
 
     score = 60.0
@@ -838,6 +850,11 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
     shots_value = int(parse_sheet_number(shots)) if shots not in (None, "") else 0
     shots_label = f"Стрельнул: {shots_value}"
 
+    sleep_hours = data.get("Сон_часы")
+    sleep_label = "Сон (вручную)"
+    if sleep_hours not in (None, ""):
+        sleep_label = f"Сон: {sleep_hours}ч (ред.)"
+
     anti_count = data.get("_anti_count")
     anti_label = "Анти‑прокраст."
     if anti_count:
@@ -847,6 +864,7 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
         (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
         (shots_label, "leisure:shots"),
+        (sleep_label, "leisure:sleep_manual"),
         (f"✅ {anti_label}" if anti_count else anti_label, "leisure:anti"),
     ]
 
@@ -1457,6 +1475,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=build_shots_keyboard(count),
         )
         return
+    if data == "leisure:sleep_manual":
+        await query.answer()
+        context.user_data["expect"] = "sleep_bed_manual"
+        await query.edit_message_text(
+            "Во сколько лег спать? (HH:MM)",
+            reply_markup=build_keyboard([("⬅️ Назад", "menu:leisure")], cols=1),
+        )
+        return
     if data == "shots:+" or data == "shots:-":
         daily = get_daily_data(context, date_str)
         count = int(parse_sheet_number(daily.get("Стрельнул_раз")))
@@ -1786,6 +1812,58 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("✅ Записал.")
         text_menu, buttons = await build_anti_menu(context, date_str)
         await update.message.reply_text(text_menu, reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")))
+        return
+
+    if expect == "sleep_bed_manual":
+        try:
+            hours, minutes = parse_time_hhmm(text)
+        except ValueError:
+            await update.message.reply_text("Нужно время в формате HH:MM (например 00:30).")
+            return
+        bed_time = f"{hours:02d}:{minutes:02d}"
+        context.user_data["sleep_bed_manual"] = bed_time
+        context.user_data["expect"] = "sleep_hours_manual"
+        await update.message.reply_text("Сколько часов спал? (например 6.5)")
+        return
+
+    if expect == "sleep_hours_manual":
+        try:
+            hours = parse_number(text)
+        except ValueError:
+            await update.message.reply_text("Нужны часы числом. Пример: 6.5")
+            return
+        cfg = context.application.bot_data["config"]
+        bed_time = context.user_data.get("sleep_bed_manual")
+        if not bed_time:
+            context.user_data.clear()
+            await update.message.reply_text("Не нашел время сна, попробуй снова.")
+            return
+        active_day = get_active_date(context)
+        try:
+            start_dt = datetime.strptime(f"{active_day} {bed_time}", "%Y-%m-%d %H:%M").replace(
+                tzinfo=ZoneInfo(cfg.timezone)
+            )
+        except Exception:
+            start_dt = get_now(cfg.timezone)
+        wake_dt = start_dt + timedelta(hours=hours)
+        day_shift = (wake_dt.date() - start_dt.date()).days
+        suffix = f" (+{day_shift}д)" if day_shift > 0 else ""
+        wake_label = wake_dt.strftime("%H:%M") + suffix
+
+        sheets.update_daily_fields(
+            active_day,
+            {
+                COLUMN_MAP["sleep_bed"]: bed_time,
+                COLUMN_MAP["sleep_hours"]: f"{hours:.1f}",
+                "sleep_source": "manual",
+            },
+        )
+        sheets.set_state(STATE_SLEEP_START, None)
+        sheets.set_state(STATE_SLEEP_START_DAY, None)
+        sheets.set_state(STATE_SLEEP_START_BED, None)
+        sheets.set_state(STATE_ACTIVE_DAY, wake_dt.strftime("%Y-%m-%d"))
+        context.user_data.clear()
+        await update.message.reply_text(f"✅ Сон записан: {fmt_num(hours, 1)} ч. Проснулся в {wake_label}.")
         return
 
     if expect == "custom_name":
