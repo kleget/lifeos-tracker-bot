@@ -70,6 +70,10 @@ class MainActivity : AppCompatActivity() {
             SyncWorker.enqueueOnce(this)
             ensureNotificationPermission()
             ForegroundSyncService.start(this)
+            lifecycleScope.launch {
+                SyncService.performSync(this@MainActivity)
+                refreshStatus()
+            }
         }
     }
 

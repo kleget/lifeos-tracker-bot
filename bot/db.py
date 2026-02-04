@@ -134,6 +134,7 @@ class Database:
                     "food_carb": "REAL",
                     "food_source": "TEXT",
                     "sleep_source": "TEXT",
+                    "shots_count": "INTEGER",
                 },
             )
 

@@ -81,6 +81,7 @@ DAILY_HEADERS = [
     "Сон_часы",
     "Режим",
     "Продуктивность",
+    "Стрельнул_раз",
     "Настроение",
     "Энергия",
     "Вес",
@@ -119,6 +120,7 @@ COLUMN_MAP = {
     "sleep_hours": "sleep_hours",
     "sleep_regime": "sleep_regime",
     "productivity": "productivity",
+    "shots": "shots_count",
     "mood": "mood",
     "energy": "energy",
     "weight": "weight",
@@ -151,6 +153,7 @@ DB_TO_HEADER = {
     "sleep_hours": "Сон_часы",
     "sleep_regime": "Режим",
     "productivity": "Продуктивность",
+    "shots_count": "Стрельнул_раз",
     "mood": "Настроение",
     "energy": "Энергия",
     "weight": "Вес",
@@ -192,6 +195,7 @@ def get_sheets(context: ContextTypes.DEFAULT_TYPE) -> Database:
 STATE_ACTIVE_DAY = "active_day"
 STATE_SLEEP_START = "sleep_start"
 STATE_SLEEP_START_DAY = "sleep_start_day"
+STATE_SLEEP_START_BED = "sleep_start_bed"
 
 
 def get_active_date(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -232,6 +236,14 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     return InlineKeyboardMarkup(rows)
+
+
+def build_shots_keyboard(count: int) -> InlineKeyboardMarkup:
+    buttons = [
+        ("➖", "shots:-"),
+        ("➕", "shots:+"),
+    ]
+    return build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure"))
 
 
 def is_authorized(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:
@@ -822,6 +834,10 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
     productivity = data.get("Продуктивность")
     prod_label = "Продуктивность" if productivity in (None, "") else f"Продуктивность: {productivity}%"
 
+    shots = data.get("Стрельнул_раз")
+    shots_value = int(parse_sheet_number(shots)) if shots not in (None, "") else 0
+    shots_label = f"Стрельнул: {shots_value}"
+
     anti_count = data.get("_anti_count")
     anti_label = "Анти‑прокраст."
     if anti_count:
@@ -830,6 +846,7 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
     return [
         (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
+        (shots_label, "leisure:shots"),
         (f"✅ {anti_label}" if anti_count else anti_label, "leisure:anti"),
     ]
 
@@ -1431,6 +1448,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         current = daily.get("Отдых_время")
         await show_menu(query, "Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, current), back_to="menu:leisure", cols=2)
         return
+    if data == "leisure:shots":
+        daily = get_daily_data(context, date_str)
+        count = int(parse_sheet_number(daily.get("Стрельнул_раз")))
+        await query.answer()
+        await query.edit_message_text(
+            f"Стрельнул сегодня: {count}",
+            reply_markup=build_shots_keyboard(count),
+        )
+        return
+    if data == "shots:+" or data == "shots:-":
+        daily = get_daily_data(context, date_str)
+        count = int(parse_sheet_number(daily.get("Стрельнул_раз")))
+        if data == "shots:+":
+            count += 1
+        else:
+            count = max(0, count - 1)
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["shots"]: count})
+        await query.answer()
+        await query.edit_message_text(
+            f"Стрельнул сегодня: {count}",
+            reply_markup=build_shots_keyboard(count),
+        )
+        return
     if data in {"leisure:sleep", "sleep:toggle"}:
         await query.answer()
         now = get_now(cfg.timezone)
@@ -1439,13 +1479,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             active_day = get_active_date(context)
             sheets.set_state(STATE_SLEEP_START, now.isoformat())
             sheets.set_state(STATE_SLEEP_START_DAY, active_day)
-            sheets.update_daily_fields(
-                active_day,
-                {
-                    COLUMN_MAP["sleep_bed"]: now.strftime("%H:%M"),
-                    "sleep_source": "manual",
-                },
-            )
+            sheets.set_state(STATE_SLEEP_START_BED, now.strftime("%H:%M"))
             daily = get_daily_data(context, active_day)
             summary = await build_daily_summary(context, active_day)
             await query.edit_message_text(
@@ -1458,17 +1492,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             start_dt = datetime.fromisoformat(sleep_start_raw)
         except ValueError:
             start_dt = now
-        sleep_day = sheets.get_state(STATE_SLEEP_START_DAY) or get_active_date(context)
+        sleep_day = today_str(cfg.timezone)
+        bed_time = sheets.get_state(STATE_SLEEP_START_BED) or start_dt.strftime("%H:%M")
         hours = max(0.0, (now - start_dt).total_seconds() / 3600)
         sheets.update_daily_fields(
             sleep_day,
             {
+                COLUMN_MAP["sleep_bed"]: bed_time,
                 COLUMN_MAP["sleep_hours"]: f"{hours:.1f}",
                 "sleep_source": "manual",
             },
         )
         sheets.set_state(STATE_SLEEP_START, None)
         sheets.set_state(STATE_SLEEP_START_DAY, None)
+        sheets.set_state(STATE_SLEEP_START_BED, None)
         sheets.set_state(STATE_ACTIVE_DAY, now.strftime("%Y-%m-%d"))
         new_day = get_active_date(context)
         daily = get_daily_data(context, new_day)
@@ -1825,6 +1862,10 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     if data.get("Вес") not in (None, ""):
         lines.append(f"⚖️ Вес: {data.get('Вес')}")
+
+    shots_count = parse_sheet_number(data.get("Стрельнул_раз"))
+    if shots_count:
+        lines.append(f"🎯 Стрельнул: {int(shots_count)}")
 
     training_value = data.get("Тренировка")
     training_display = display_training(training_value) or (training_value if training_value else "")
