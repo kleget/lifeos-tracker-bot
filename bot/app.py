@@ -220,6 +220,92 @@ def get_sleep_start(context: ContextTypes.DEFAULT_TYPE) -> datetime | None:
         return None
 
 
+def summary_state_key(chat_id: int) -> str:
+    return f"summary_msg_{chat_id}"
+
+
+def prompt_state_key(chat_id: int) -> str:
+    return f"prompt_msg_{chat_id}"
+
+
+def get_state_int(db: Database, key: str) -> int | None:
+    raw = db.get_state(key)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+async def safe_delete_message(bot, chat_id: int, message_id: int | None) -> None:
+    if not message_id:
+        return
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception:
+        return
+
+
+async def send_or_edit_summary(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    db = get_sheets(context)
+    msg_id = get_state_int(db, summary_state_key(chat_id))
+    if msg_id:
+        try:
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, reply_markup=keyboard)
+            return
+        except Exception:
+            pass
+    sent = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+    db.set_state(summary_state_key(chat_id), str(sent.message_id))
+
+
+async def send_or_edit_prompt(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    text: str,
+    keyboard: InlineKeyboardMarkup | None = None,
+) -> int:
+    db = get_sheets(context)
+    msg_id = get_state_int(db, prompt_state_key(chat_id))
+    if msg_id:
+        try:
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, reply_markup=keyboard)
+            return msg_id
+        except Exception:
+            pass
+    sent = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+    db.set_state(prompt_state_key(chat_id), str(sent.message_id))
+    return sent.message_id
+
+
+async def clear_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    db = get_sheets(context)
+    msg_id = get_state_int(db, prompt_state_key(chat_id))
+    if msg_id:
+        await safe_delete_message(context.bot, chat_id, msg_id)
+        db.set_state(prompt_state_key(chat_id), None)
+
+
+async def render_summary(context: ContextTypes.DEFAULT_TYPE, chat_id: int, date_str: str | None = None) -> None:
+    if date_str is None:
+        date_str = get_active_date(context)
+    summary = await build_daily_summary(context, date_str)
+    daily = get_daily_data(context, date_str)
+    await send_or_edit_summary(context, chat_id, summary, build_main_menu_keyboard(daily))
+
+
+async def finalize_input(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_message_id: int) -> None:
+    await clear_prompt(context, chat_id)
+    await safe_delete_message(context.bot, chat_id, user_message_id)
+    await render_summary(context, chat_id)
+
+
 def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if data.get("_sleep_start"):
@@ -227,6 +313,7 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(rows)
 
     rows.append([InlineKeyboardButton("😴 Лёг спать", callback_data="sleep:toggle")])
+    rows.append([InlineKeyboardButton("🔄 Обновить", callback_data="menu:refresh")])
     row: list[InlineKeyboardButton] = []
     for label, payload in MAIN_MENU:
         row.append(InlineKeyboardButton(label, callback_data=payload))
@@ -273,12 +360,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.application.bot_data["config"]
     date_str = get_active_date(context)
     get_sheets(context).ensure_daily_row(date_str)
-    summary = await build_daily_summary(context, date_str)
-    daily = get_daily_data(context, date_str)
-    await update.message.reply_text(
-        summary,
-        reply_markup=build_main_menu_keyboard(daily),
-    )
+    if update.message is None:
+        return
+    await render_summary(context, update.effective_chat.id, date_str)
+    await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
 
 
 async def show_menu(query, title: str, buttons, back_to: str = "menu:main", cols: int = 2) -> None:
@@ -1227,9 +1312,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "menu:main":
         await query.answer()
-        summary = await build_daily_summary(context, date_str)
-        daily = get_daily_data(context, date_str)
-        await query.edit_message_text(summary, reply_markup=build_main_menu_keyboard(daily))
+        await render_summary(context, query.message.chat_id, date_str)
+        return
+    if data == "menu:refresh":
+        await query.answer()
+        await render_summary(context, query.message.chat_id, date_str)
         return
     if data == "menu:sport":
         daily = get_daily_data(context, date_str)
@@ -1295,7 +1382,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "habit:add":
         await query.answer()
         context.user_data["expect"] = "habit_add"
-        await query.edit_message_text("Введи название новой привычки (например, \"Зарядка\"):")
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "Введи название новой привычки (например, \"Зарядка\"):",
+        )
         return
 
     if data == "habit:clear":
@@ -1323,7 +1414,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reason = data.split(":", 1)[1] if ":" in data else ""
         if reason == "custom":
             context.user_data["expect"] = "anti_custom"
-            await query.edit_message_text("Напиши причину прокрастинации (коротко):")
+            await send_or_edit_prompt(
+                context,
+                query.message.chat_id,
+                "Напиши причину прокрастинации (коротко):",
+            )
             return
         if reason == "undo":
             removed = sheets.delete_last_session(date_str, category="Анти")
@@ -1523,9 +1618,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "leisure:sleep_manual":
         await query.answer()
         context.user_data["expect"] = "sleep_bed_manual"
-        await query.edit_message_text(
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
             "Во сколько лег спать? (HH:MM)",
-            reply_markup=build_keyboard([("⬅️ Назад", "menu:leisure")], cols=1),
+            build_keyboard([("⬅️ Назад", "menu:leisure")], cols=1),
         )
         return
     if data == "shots:+" or data == "shots:-":
@@ -1621,9 +1718,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer()
         context.user_data.clear()
         context.user_data["expect"] = "custom_name"
-        await query.edit_message_text(
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
             "Введи название продукта (например, \"Миндаль\").",
-            reply_markup=build_keyboard([("⬅️ Назад", "menu:food")], cols=1),
+            build_keyboard([("⬅️ Назад", "menu:food")], cols=1),
         )
         return
 
@@ -1640,23 +1739,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "morale:weight":
         await query.answer()
         context.user_data["expect"] = "weight"
-        await query.edit_message_text("Введи вес (например, 72.4):")
+        await send_or_edit_prompt(context, query.message.chat_id, "Введи вес (например, 72.4):")
         return
     if data == "morale:regret":
         await query.answer()
         context.user_data["expect"] = "regret"
-        await query.edit_message_text("О чем жалеешь сегодня? Напиши текст.")
+        await send_or_edit_prompt(context, query.message.chat_id, "О чем жалеешь сегодня? Напиши текст.")
         return
     if data == "morale:review":
         await query.answer()
         context.user_data["expect"] = "review"
-        await query.edit_message_text("Отзыв о дне: напиши коротко.")
+        await send_or_edit_prompt(context, query.message.chat_id, "Отзыв о дне: напиши коротко.")
         return
 
     if data == "habits:text":
         await query.answer()
         context.user_data["expect"] = "habits"
-        await query.edit_message_text("Привычки: напиши текст.")
+        await send_or_edit_prompt(context, query.message.chat_id, "Привычки: напиши текст.")
         return
 
     if data.startswith("set:"):
@@ -1797,32 +1896,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     expect = context.user_data.get("expect")
     if not expect:
         return
+    if update.effective_chat is None or update.message is None:
+        return
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
     date_str = get_active_date(context)
     text = update.message.text.strip()
+    chat_id = update.effective_chat.id
 
     if expect == "weight":
         try:
             weight = parse_number(text)
         except ValueError:
-            await update.message.reply_text("Не понял вес. Пример: 72.4")
+            await send_or_edit_prompt(context, chat_id, "Не понял вес. Пример: 72.4")
             return
         sheets.update_daily_fields(date_str, {COLUMN_MAP["weight"]: weight})
         context.user_data.clear()
-        await update.message.reply_text("✅ Вес записан.")
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
     if expect == "regret":
         sheets.update_daily_fields(date_str, {COLUMN_MAP["regret"]: text})
         context.user_data.clear()
-        await update.message.reply_text("✅ Записал.")
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
     if expect == "review":
         sheets.update_daily_fields(date_str, {COLUMN_MAP["review"]: text})
         context.user_data.clear()
-        await update.message.reply_text("✅ Записал.")
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
     if expect == "habits":
@@ -1836,52 +1938,45 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             sheets.set_habit_done(date_str, item, True)
         sheets.update_daily_fields(date_str, {COLUMN_MAP["habits"]: format_habits_value(items)})
         context.user_data.clear()
-        await update.message.reply_text("✅ Записал.")
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
     if expect == "habit_add":
         added = sheets.add_habit(text)
         context.user_data.clear()
-        if added:
-            await update.message.reply_text("✅ Привычка добавлена.")
-        else:
-            await update.message.reply_text("ℹ️ Такая привычка уже есть.")
-        text_menu, buttons = await build_habits_menu(context, date_str)
-        await update.message.reply_text(text_menu, reply_markup=build_keyboard(buttons, cols=1, back=("⬅️ Назад", "menu:main")))
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
     if expect == "anti_custom":
         reason = text
         sheets.add_session(date_str, time_str(cfg.timezone), "Анти", reason, 0, "")
         context.user_data.clear()
-        await update.message.reply_text("✅ Записал.")
-        text_menu, buttons = await build_anti_menu(context, date_str)
-        await update.message.reply_text(text_menu, reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")))
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
     if expect == "sleep_bed_manual":
         try:
             hours, minutes = parse_time_hhmm(text)
         except ValueError:
-            await update.message.reply_text("Нужно время в формате HH:MM (например 00:30).")
+            await send_or_edit_prompt(context, chat_id, "Нужно время в формате HH:MM (например 00:30).")
             return
         bed_time = f"{hours:02d}:{minutes:02d}"
         context.user_data["sleep_bed_manual"] = bed_time
         context.user_data["expect"] = "sleep_hours_manual"
-        await update.message.reply_text("Сколько часов спал? (например 6.5)")
+        await send_or_edit_prompt(context, chat_id, "Сколько часов спал? (например 6.5)")
         return
 
     if expect == "sleep_hours_manual":
         try:
             hours = parse_number(text)
         except ValueError:
-            await update.message.reply_text("Нужны часы числом. Пример: 6.5")
+            await send_or_edit_prompt(context, chat_id, "Нужны часы числом. Пример: 6.5")
             return
         cfg = context.application.bot_data["config"]
         bed_time = context.user_data.get("sleep_bed_manual")
         if not bed_time:
             context.user_data.clear()
-            await update.message.reply_text("Не нашел время сна, попробуй снова.")
+            await send_or_edit_prompt(context, chat_id, "Не нашел время сна, попробуй снова.")
             return
         active_day = get_active_date(context)
         try:
@@ -1908,31 +2003,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sheets.set_state(STATE_SLEEP_START_BED, None)
         sheets.set_state(STATE_ACTIVE_DAY, wake_dt.strftime("%Y-%m-%d"))
         context.user_data.clear()
-        await update.message.reply_text(f"✅ Сон записан: {fmt_num(hours, 1)} ч. Проснулся в {wake_label}.")
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
     if expect == "custom_name":
         context.user_data["custom_name"] = text
         context.user_data["expect"] = "custom_macros"
-        await update.message.reply_text("Введи Б/Ж/У/Ккал на 100г (4 числа через пробел).")
+        await send_or_edit_prompt(context, chat_id, "Введи Б/Ж/У/Ккал на 100г (4 числа через пробел).")
         return
 
     if expect == "custom_macros":
         try:
             proteins, fats, carbs, kcal = parse_numbers(text, 4)
         except ValueError:
-            await update.message.reply_text("Нужны 4 числа. Пример: 20 5 10 150")
+            await send_or_edit_prompt(context, chat_id, "Нужны 4 числа. Пример: 20 5 10 150")
             return
         context.user_data["custom_macros"] = (proteins, fats, carbs, kcal)
         context.user_data["expect"] = "custom_grams"
-        await update.message.reply_text("Сколько грамм съел? (одно число)")
+        await send_or_edit_prompt(context, chat_id, "Сколько грамм съел? (одно число)")
         return
 
     if expect == "custom_grams":
         try:
             grams = parse_number(text)
         except ValueError:
-            await update.message.reply_text("Нужны граммы числом. Пример: 120")
+            await send_or_edit_prompt(context, chat_id, "Нужны граммы числом. Пример: 120")
             return
         name = context.user_data.get("custom_name", "Продукт")
         proteins, fats, carbs, kcal = context.user_data.get("custom_macros", (0, 0, 0, 0))
@@ -1946,7 +2041,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             1,
             comment="custom")
         context.user_data.clear()
-        await update.message.reply_text("✅ Продукт добавлен и записан в еду.")
+        await finalize_input(context, chat_id, update.message.message_id)
         return
 
 
@@ -2263,6 +2358,7 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             filename=xlsx_path.name,
             caption="Экспорт готов ✅",
         )
+    await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
 
 
 def parse_sync_payload(text: str) -> dict:
@@ -2332,13 +2428,15 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         payload = parse_sync_payload(update.message.text or "")
     except Exception:
-        await update.message.reply_text("Не понял /sync. Формат: /sync {\"steps\":12345,...}")
+        await send_or_edit_prompt(
+            context,
+            update.effective_chat.id,
+            "Не понял /sync. Формат: /sync {\"steps\":12345,...}",
+        )
         return
     date_str, updates = apply_sync_payload(db, cfg, payload)
-    if updates:
-        await update.message.reply_text(f"✅ Синк обновил {date_str}.")
-    else:
-        await update.message.reply_text("Нет данных для синка.")
+    await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
+    await render_summary(context, update.effective_chat.id, date_str)
 
 
 def start_sync_http_server(db: Database, cfg) -> ThreadingHTTPServer | None:
