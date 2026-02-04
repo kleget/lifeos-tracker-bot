@@ -577,20 +577,65 @@ def compute_quality(data: dict) -> int | None:
     if context["any_data"] is False:
         return 0
 
-    score = 60.0
-    score += bonus_linear(context["sleep_hours"], 6.0, 9.0, 15.0)
-    score += bonus_linear(context["steps"], 6000.0, 15000.0, 15.0)
-    score += bonus_linear(context["english"], 30.0, 60.0, 10.0)
-    score += bonus_linear(context["study_total"], 60.0, 120.0, 15.0)
-    score += bonus_linear(context["reading_pages"], 0.0, 20.0, 5.0)
+    def segment(value: float, start: float, end: float, s0: float, s1: float) -> float:
+        if value <= start:
+            return s0
+        if value >= end:
+            return s1
+        return s0 + (value - start) / (end - start) * (s1 - s0)
+
+    sleep = context["sleep_hours"]
+    if sleep <= 4:
+        sleep_score = 0.0
+    elif sleep <= 5:
+        sleep_score = segment(sleep, 4.0, 5.0, 0.0, 0.2)
+    elif sleep <= 6:
+        sleep_score = segment(sleep, 5.0, 6.0, 0.2, 0.5)
+    elif sleep <= 9:
+        sleep_score = segment(sleep, 6.0, 9.0, 0.5, 1.0)
+    else:
+        sleep_score = 1.0
+
+    steps = context["steps"]
+    if steps <= 6000:
+        steps_score = segment(steps, 0.0, 6000.0, 0.0, 0.5)
+    elif steps <= 12000:
+        steps_score = segment(steps, 6000.0, 12000.0, 0.5, 1.0)
+    else:
+        steps_score = 1.0
+
+    english = context["english"]
+    if english <= 30:
+        english_score = segment(english, 0.0, 30.0, 0.0, 0.5)
+    elif english <= 60:
+        english_score = segment(english, 30.0, 60.0, 0.5, 1.0)
+    else:
+        english_score = 1.0
+
+    deep = context["study_total"]
+    if deep <= 60:
+        deep_score = segment(deep, 0.0, 60.0, 0.0, 0.5)
+    elif deep <= 120:
+        deep_score = segment(deep, 60.0, 120.0, 0.5, 1.0)
+    else:
+        deep_score = 1.0
 
     training = context["training"]
     if training in {"Верх", "Ноги", "Низ"}:
-        score += 10
+        sport_score = 1.0
     elif training == "Отдых":
-        score += 4
+        sport_score = 0.4
+    else:
+        sport_score = 0.0
 
-    return min(100, int(round(score)))
+    quality = (
+        0.35 * deep_score
+        + 0.25 * english_score
+        + 0.15 * sleep_score
+        + 0.15 * sport_score
+        + 0.10 * steps_score
+    )
+    return min(100, int(round(quality * 100)))
 
 
 def day_minimum_met(data: dict) -> tuple[bool, dict]:

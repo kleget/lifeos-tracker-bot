@@ -10,8 +10,6 @@
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
     <uses-permission android:name="android.permission.health.READ_WEIGHT" />
@@ -60,9 +58,5 @@
             </intent-filter>
         </activity-alias>
 
-        <service
-            android:name=".ForegroundSyncService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
