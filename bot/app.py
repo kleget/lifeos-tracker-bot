@@ -33,6 +33,7 @@ from menus import (
     ENGLISH_OPTIONS,
     ML_OPTIONS,
     ALGOS_OPTIONS,
+    UNI_OPTIONS,
     CODE_MODE_OPTIONS,
     CODE_TOPIC_OPTIONS,
     READING_OPTIONS,
@@ -55,6 +56,7 @@ from menus import (
     HABITS_MENU,
     build_keyboard,
     quantity_keyboard,
+    NAP_OPTIONS,
 )
 from db import Database
 
@@ -72,6 +74,7 @@ DAILY_HEADERS = [
     "Английский_мин",
     "ML_мин",
     "Алгосы_мин",
+    "ВУЗ_мин",
     "Код_режим",
     "Код_тема",
     "Чтение_стр",
@@ -79,6 +82,7 @@ DAILY_HEADERS = [
     "Отдых_тип",
     "Сон_отбой",
     "Сон_часы",
+    "Сон_дневной",
     "Режим",
     "Продуктивность",
     "Стрельнул_раз",
@@ -100,6 +104,7 @@ DAILY_HEADERS = [
     "Жиры",
     "Угли",
     "Качество_дня",
+    "Коэффициент_дня",
     "Не_заполнено",
 ]
 
@@ -111,6 +116,7 @@ COLUMN_MAP = {
     "english": "english_min",
     "ml": "ml_min",
     "algos": "algo_min",
+    "uni": "uni_min",
     "code_mode": "code_mode",
     "code_topic": "code_topic",
     "reading": "reading_pages",
@@ -118,6 +124,7 @@ COLUMN_MAP = {
     "rest_type": "rest_type",
     "sleep_bed": "sleep_bed",
     "sleep_hours": "sleep_hours",
+    "nap": "nap_hours",
     "sleep_regime": "sleep_regime",
     "productivity": "productivity",
     "shots": "shots_count",
@@ -144,6 +151,7 @@ DB_TO_HEADER = {
     "english_min": "Английский_мин",
     "ml_min": "ML_мин",
     "algo_min": "Алгосы_мин",
+    "uni_min": "ВУЗ_мин",
     "code_mode": "Код_режим",
     "code_topic": "Код_тема",
     "reading_pages": "Чтение_стр",
@@ -151,6 +159,7 @@ DB_TO_HEADER = {
     "rest_type": "Отдых_тип",
     "sleep_bed": "Сон_отбой",
     "sleep_hours": "Сон_часы",
+    "nap_hours": "Сон_дневной",
     "sleep_regime": "Режим",
     "productivity": "Продуктивность",
     "shots_count": "Стрельнул_раз",
@@ -169,7 +178,7 @@ DB_TO_HEADER = {
     "food_source": "Еда_источник",
 }
 
-NUMERIC_FIELDS = {"cardio", "english", "ml", "algos", "reading", "productivity"}
+NUMERIC_FIELDS = {"cardio", "english", "ml", "algos", "uni", "reading", "productivity"}
 
 
 def get_now(tz_name: str) -> datetime:
@@ -705,6 +714,9 @@ def compute_quality(data: dict) -> int | None:
     else:
         deep_score = 1.0
 
+    uni = context["uni"]
+    uni_bonus = bonus_linear(uni, 30.0, 180.0, 15.0)
+
     training = context["training"]
     if training in {"Верх", "Ноги", "Низ"}:
         sport_score = 1.0
@@ -713,20 +725,21 @@ def compute_quality(data: dict) -> int | None:
     else:
         sport_score = 0.0
 
-    quality = (
+    base_quality = (
         0.35 * deep_score
         + 0.25 * english_score
         + 0.15 * sleep_score
         + 0.15 * sport_score
         + 0.10 * steps_score
     )
-    return min(100, int(round(quality * 100)))
+    return min(115, int(round(base_quality * 100 + uni_bonus)))
 
 
 def day_minimum_met(data: dict) -> tuple[bool, dict]:
     english = parse_sheet_number(data.get("Английский_мин"))
     ml = parse_sheet_number(data.get("ML_мин"))
     algos = parse_sheet_number(data.get("Алгосы_мин"))
+    uni = parse_sheet_number(data.get("ВУЗ_мин"))
     steps = steps_value(data)
     sleep_hours = parse_sleep_hours(data.get("Сон_часы")) or 0.0
     training = normalize_choice(data.get("Тренировка"))
@@ -738,6 +751,7 @@ def day_minimum_met(data: dict) -> tuple[bool, dict]:
             english > 0,
             ml > 0,
             algos > 0,
+            uni > 0,
             steps > 0,
             sleep_hours > 0,
             reading_pages > 0,
@@ -753,6 +767,7 @@ def day_minimum_met(data: dict) -> tuple[bool, dict]:
         "ml": ml,
         "algos": algos,
         "study_total": ml + algos,
+        "uni": uni,
         "sleep_hours": sleep_hours,
         "steps": steps,
         "training": training,
@@ -813,6 +828,7 @@ def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
         return {}
 
     data: dict[str, object] = {}
+    data["Дата"] = date_str
     for db_key, header in DB_TO_HEADER.items():
         data[header] = row.get(db_key)
 
@@ -857,6 +873,7 @@ def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
 
     quality = compute_quality(data)
     data["Качество_дня"] = quality if quality is not None else ""
+    data["Коэффициент_дня"] = data["Качество_дня"]
     missing = compute_missing(data)
     data["Не_заполнено"] = missing or ""
     return data
@@ -889,6 +906,7 @@ FIELD_HEADERS = {
     "english": "Английский_мин",
     "ml": "ML_мин",
     "algos": "Алгосы_мин",
+    "uni": "ВУЗ_мин",
     "code_mode": "Код_режим",
     "code_topic": "Код_тема",
     "reading": "Чтение_стр",
@@ -896,6 +914,7 @@ FIELD_HEADERS = {
     "rest_type": "Отдых_тип",
     "sleep_bed": "Сон_отбой",
     "sleep_hours": "Сон_часы",
+    "nap": "Сон_дневной",
     "sleep_regime": "Режим",
     "productivity": "Продуктивность",
     "mood": "Настроение",
@@ -909,6 +928,7 @@ FIELD_LABELS = {
     "english": "Английский",
     "ml": "ML",
     "algos": "Алгосы",
+    "uni": "ВУЗ",
     "code_mode": "Код (режим)",
     "code_topic": "Код (тема)",
     "reading": "Чтение",
@@ -916,6 +936,7 @@ FIELD_LABELS = {
     "rest_type": "Отдых (тип)",
     "sleep_bed": "Сон (отбой)",
     "sleep_hours": "Сон (часы)",
+    "nap": "Дневной сон",
     "sleep_regime": "Режим",
     "productivity": "Продуктивность",
     "mood": "Настроение",
@@ -958,6 +979,9 @@ def build_study_menu(data: dict) -> list[tuple[str, str]]:
     algos = data.get("Алгосы_мин")
     algos_label = "Алгосы" if algos in (None, "") else f"Алгосы: {algos}м"
 
+    uni = data.get("ВУЗ_мин")
+    uni_label = "ВУЗ" if uni in (None, "") else f"ВУЗ: {uni}м"
+
     reading = data.get("Чтение_стр")
     reading_label = format_reading_label(reading)
 
@@ -965,6 +989,7 @@ def build_study_menu(data: dict) -> list[tuple[str, str]]:
         (f"✅ {english_label}" if english not in (None, "") else english_label, "study:english"),
         (f"✅ {ml_label}" if ml not in (None, "") else ml_label, "study:ml"),
         (f"✅ {algos_label}" if algos not in (None, "") else algos_label, "study:algos"),
+        (f"✅ {uni_label}" if uni not in (None, "") else uni_label, "study:uni"),
         (f"✅ {reading_label}" if reading_is_set(reading) else reading_label, "study:reading"),
     ]
 
@@ -985,6 +1010,11 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
     if sleep_hours not in (None, ""):
         sleep_label = f"Сон: {sleep_hours}ч (ред.)"
 
+    nap_hours = data.get("Сон_дневной")
+    nap_label = "Дневной сон"
+    if nap_hours not in (None, ""):
+        nap_label = f"Дневной сон: {nap_hours}ч"
+
     anti_count = data.get("_anti_count")
     anti_label = "Анти‑прокраст."
     if anti_count:
@@ -995,6 +1025,7 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
         (shots_label, "leisure:shots"),
         (sleep_label, "leisure:sleep_manual"),
+        (f"✅ {nap_label}" if nap_hours not in (None, "") else nap_label, "leisure:nap"),
         (f"✅ {anti_label}" if anti_count else anti_label, "leisure:anti"),
     ]
 
@@ -1215,6 +1246,8 @@ def menu_config(menu_key: str, data: dict) -> tuple[str, list[tuple[str, str]], 
         return ("ML:", mark_set_buttons(ML_OPTIONS, data.get("ML_мин")), "menu:study", 3)
     if menu_key == "algos":
         return ("Алгосы:", mark_set_buttons(ALGOS_OPTIONS, data.get("Алгосы_мин")), "menu:study", 3)
+    if menu_key == "uni":
+        return ("ВУЗ:", mark_set_buttons(UNI_OPTIONS, data.get("ВУЗ_мин")), "menu:study", 3)
     if menu_key == "code_mode":
         return ("Код: режим", mark_set_buttons(CODE_MODE_OPTIONS, data.get("Код_режим")), "menu:study", 1)
     if menu_key == "code_topic":
@@ -1231,6 +1264,8 @@ def menu_config(menu_key: str, data: dict) -> tuple[str, list[tuple[str, str]], 
         return ("Сон: сколько часов?", mark_set_buttons(SLEEP_HOURS_OPTIONS, data.get("Сон_часы")), "menu:leisure", 3)
     if menu_key == "sleep_regime":
         return ("Сон: режим", mark_set_buttons(SLEEP_REGIME_OPTIONS, data.get("Режим")), "menu:leisure", 2)
+    if menu_key == "nap":
+        return ("Дневной сон:", mark_set_buttons(NAP_OPTIONS, data.get("Сон_дневной")), "menu:leisure", 2)
     if menu_key == "productivity":
         return ("Продуктивность:", mark_set_buttons(PRODUCTIVITY_OPTIONS, data.get("Продуктивность")), "menu:leisure", 3)
     if menu_key == "mood":
@@ -1312,10 +1347,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "menu:main":
         await query.answer()
+        db = get_sheets(context)
+        if query.message is not None:
+            db.set_state(summary_state_key(query.message.chat_id), str(query.message.message_id))
         await render_summary(context, query.message.chat_id, date_str)
         return
     if data == "menu:refresh":
         await query.answer()
+        db = get_sheets(context)
+        if query.message is not None:
+            db.set_state(summary_state_key(query.message.chat_id), str(query.message.message_id))
         await render_summary(context, query.message.chat_id, date_str)
         return
     if data == "menu:sport":
@@ -1513,6 +1554,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         current = daily.get("Алгосы_мин")
         await show_menu(query, "Алгосы:", mark_set_buttons(ALGOS_OPTIONS, current), back_to="menu:study", cols=3)
         return
+    if data == "study:uni":
+        daily = get_daily_data(context, date_str)
+        current = daily.get("ВУЗ_мин")
+        await show_menu(query, "ВУЗ:", mark_set_buttons(UNI_OPTIONS, current), back_to="menu:study", cols=3)
+        return
     if data == "study:code":
         await query.answer()
         text, buttons = await build_code_menu(context, date_str)
@@ -1605,6 +1651,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         daily = get_daily_data(context, date_str)
         current = daily.get("Отдых_время")
         await show_menu(query, "Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, current), back_to="menu:leisure", cols=2)
+        return
+    if data == "leisure:nap":
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Сон_дневной")
+        await show_menu(query, "Дневной сон:", mark_set_buttons(NAP_OPTIONS, current), back_to="menu:leisure", cols=2)
+        return
+    if data == "leisure:nap_custom":
+        await query.answer()
+        context.user_data["expect"] = "nap_hours"
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "Дневной сон: сколько часов? (например, 1.5)",
+            build_keyboard([("⬅️ Назад", "menu:leisure")], cols=1),
+        )
         return
     if data == "leisure:shots":
         daily = get_daily_data(context, date_str)
@@ -1771,9 +1832,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return_menu = "menu:main"
                 if field_key in {"training", "cardio", "steps"}:
                     return_menu = "sport"
-                elif field_key in {"english", "ml", "algos", "code_mode", "code_topic", "reading"}:
+                elif field_key in {"english", "ml", "algos", "uni", "code_mode", "code_topic", "reading"}:
                     return_menu = "study"
-                elif field_key in {"rest_time", "rest_type", "sleep_bed", "sleep_hours", "sleep_regime", "productivity"}:
+                elif field_key in {"rest_time", "rest_type", "sleep_bed", "sleep_hours", "sleep_regime", "productivity", "nap"}:
                     return_menu = "leisure"
                 elif field_key in {"mood", "energy"}:
                     return_menu = "morale"
@@ -1841,25 +1902,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "english": "english",
             "ml": "ml",
             "algos": "algos",
+            "uni": "uni",
             "reading": "reading",
             "productivity": "productivity",
             "mood": "mood",
             "energy": "energy",
+            "nap": "nap",
         }
         if field_key in field_map:
             key = field_map[field_key]
             col = COLUMN_MAP[key]
-            if key in NUMERIC_FIELDS:
+            if key == "nap":
+                value = float(value)
+            elif key in NUMERIC_FIELDS:
                 value = int(float(value))
             sheets.update_daily_fields(date_str, {col: value})
             if field_key in {"training", "cardio", "steps"}:
                 daily = get_daily_data(context, date_str)
                 await show_menu(query, "Спорт:", build_sport_menu(daily))
                 return
-            if field_key in {"english", "ml", "algos", "reading"}:
+            if field_key in {"english", "ml", "algos", "uni", "reading"}:
                 await show_study_menu(query, context, date_str)
                 return
-            if field_key == "productivity":
+            if field_key in {"productivity", "nap"}:
                 daily = get_daily_data(context, date_str)
                 await show_menu(query, "Досуг:", build_leisure_menu(daily))
                 return
@@ -2006,6 +2071,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await finalize_input(context, chat_id, update.message.message_id)
         return
 
+    if expect == "nap_hours":
+        try:
+            hours = parse_number(text)
+        except ValueError:
+            await send_or_edit_prompt(context, chat_id, "Нужны часы числом. Пример: 1.5")
+            return
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["nap"]: hours})
+        context.user_data.clear()
+        await finalize_input(context, chat_id, update.message.message_id)
+        return
+
     if expect == "custom_name":
         context.user_data["custom_name"] = text
         context.user_data["expect"] = "custom_macros"
@@ -2076,7 +2152,12 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     sleep_hours = context_min["sleep_hours"]
     sleep_display = "—" if sleep_hours <= 0 else f"{fmt_num(sleep_hours, 1)} ч"
-    lines.append(f"😴 Сон: {sleep_display}")
+    nap_hours = parse_sheet_number(data.get("Сон_дневной"))
+    if nap_hours > 0:
+        nap_display = f"{fmt_num(nap_hours, 1)} ч"
+        lines.append(f"😴 Сон: {sleep_display} (+дневной {nap_display})")
+    else:
+        lines.append(f"😴 Сон: {sleep_display}")
 
     if data.get("Вес") not in (None, ""):
         lines.append(f"⚖️ Вес: {data.get('Вес')}")
@@ -2104,6 +2185,8 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         study_parts.append(f"ml {data.get('ML_мин')}м")
     if data.get("Алгосы_мин"):
         study_parts.append(f"алг {data.get('Алгосы_мин')}м")
+    if data.get("ВУЗ_мин"):
+        study_parts.append(f"вуз {data.get('ВУЗ_мин')}м")
     reading_value = data.get("Чтение_стр")
     if reading_is_set(reading_value):
         label = "не читал" if normalize_choice(reading_value) in {"0", "0.0"} else f"{reading_value} стр"
@@ -2395,6 +2478,10 @@ def apply_sync_payload(db: Database, cfg, payload: dict) -> tuple[str, dict[str,
         updates[COLUMN_MAP["algos"]] = int(float(payload["algo_min"]))
     if "algos_min" in payload:
         updates[COLUMN_MAP["algos"]] = int(float(payload["algos_min"]))
+    if "uni_min" in payload:
+        updates[COLUMN_MAP["uni"]] = int(float(payload["uni_min"]))
+    if "nap_hours" in payload:
+        updates[COLUMN_MAP["nap"]] = float(payload["nap_hours"])
 
     food_payload = payload.get("food")
     if isinstance(food_payload, dict):

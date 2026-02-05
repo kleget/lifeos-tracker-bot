@@ -66,6 +66,7 @@ STUDY_MENU = [
     ("Английский", "study:english"),
     ("ML", "study:ml"),
     ("Алгосы", "study:algos"),
+    ("ВУЗ", "study:uni"),
     ("Чтение", "study:reading"),
 ]
 
@@ -96,6 +97,15 @@ ALGOS_OPTIONS = [
     ("3ч", "set:algos:180"),
 ]
 
+UNI_OPTIONS = [
+    ("30м", "set:uni:30"),
+    ("1ч", "set:uni:60"),
+    ("1.5ч", "set:uni:90"),
+    ("2ч", "set:uni:120"),
+    ("2.5ч", "set:uni:150"),
+    ("3ч", "set:uni:180"),
+]
+
 CODE_MODE_OPTIONS = [
     ("Сам", "code_mode:Сам"),
     ("С помощью", "code_mode:С помощью"),
@@ -116,7 +126,19 @@ READING_OPTIONS = [("Не читал", "set:reading:0")] + [
 LEISURE_MENU = [
     ("Отдых", "leisure:rest"),
     ("Продуктивность", "leisure:productivity"),
+    ("Дневной сон", "leisure:nap"),
     ("🧯 Анти‑прокраст.", "leisure:anti"),
+]
+
+NAP_OPTIONS = [
+    ("0", "set:nap:0"),
+    ("30м", "set:nap:0.5"),
+    ("1ч", "set:nap:1"),
+    ("1.5ч", "set:nap:1.5"),
+    ("2ч", "set:nap:2"),
+    ("2.5ч", "set:nap:2.5"),
+    ("3ч", "set:nap:3"),
+    ("Другое", "leisure:nap_custom"),
 ]
 
 REST_TIME_OPTIONS = [

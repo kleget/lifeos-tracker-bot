@@ -41,6 +41,7 @@ class Database:
                     english_min INTEGER,
                     ml_min INTEGER,
                     algo_min INTEGER,
+                    uni_min INTEGER,
                     code_mode TEXT,
                     code_topic TEXT,
                     reading_pages INTEGER,
@@ -48,6 +49,7 @@ class Database:
                     rest_type TEXT,
                     sleep_bed TEXT,
                     sleep_hours TEXT,
+                    nap_hours REAL,
                     sleep_regime TEXT,
                     productivity INTEGER,
                     mood TEXT,
@@ -126,6 +128,7 @@ class Database:
                     "steps_count": "INTEGER",
                     "ml_min": "INTEGER",
                     "algo_min": "INTEGER",
+                    "uni_min": "INTEGER",
                     "active_kcal": "REAL",
                     "food_tracked": "INTEGER",
                     "food_kcal": "REAL",
@@ -135,6 +138,7 @@ class Database:
                     "food_source": "TEXT",
                     "sleep_source": "TEXT",
                     "shots_count": "INTEGER",
+                    "nap_hours": "REAL",
                 },
             )
 
