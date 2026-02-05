@@ -373,10 +373,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     cfg = context.application.bot_data["config"]
     date_str = get_active_date(context)
-    get_sheets(context).ensure_daily_row(date_str)
+    db = get_sheets(context)
+    db.ensure_daily_row(date_str)
     if update.message is None:
         return
-    await render_summary(context, update.effective_chat.id, date_str)
+    chat_id = update.effective_chat.id
+    old_summary_id = get_state_int(db, summary_state_key(chat_id))
+    if old_summary_id:
+        await safe_delete_message(context.bot, chat_id, old_summary_id)
+        db.set_state(summary_state_key(chat_id), None)
+    await render_summary(context, chat_id, date_str)
     await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
 
 
