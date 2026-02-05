@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from openpyxl import Workbook
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -268,8 +269,12 @@ async def send_or_edit_summary(
         try:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, reply_markup=keyboard)
             return
+        except BadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return
         except Exception:
             pass
+        await safe_delete_message(context.bot, chat_id, msg_id)
     sent = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
     db.set_state(summary_state_key(chat_id), str(sent.message_id))
 
