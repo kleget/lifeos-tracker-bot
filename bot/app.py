@@ -783,6 +783,21 @@ def day_minimum_met(data: dict) -> tuple[bool, dict]:
     }
 
 
+def day_completion_status(data: dict) -> str:
+    min_ok, context = day_minimum_met(data)
+    if not context["any_data"]:
+        return "empty"
+    if min_ok:
+        return "full"
+    checks = [
+        context["english"] >= 30,
+        max(context["ml"], context["algos"]) >= 60,
+        context["steps"] >= 6000,
+        bool(context["training"]),
+    ]
+    return "partial" if sum(checks) >= 3 else "none"
+
+
 def compute_missing(data: dict) -> str | None:
     missing: list[str] = []
     training = normalize_choice(data.get("Тренировка"))
@@ -2141,16 +2156,21 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     carbs = macros.get("carb", 0.0)
 
     min_ok, context_min = day_minimum_met(data)
+    status = day_completion_status(data)
 
     cfg = context.application.bot_data["config"]
     calendar_date = today_str(cfg.timezone)
     lines = [f"📅 Сегодня: {date_str}"]
 
     quality = fmt_value(data.get("Качество_дня"))
-    if context_min["any_data"]:
-        quality_prefix = "✅" if min_ok else "❌"
-    else:
+    if status == "full":
+        quality_prefix = "✅"
+    elif status == "partial":
+        quality_prefix = "🟧"
+    elif status == "empty":
         quality_prefix = "⬜"
+    else:
+        quality_prefix = "❌"
     lines.append(f"{quality_prefix} Качество дня: {quality}")
 
     steps_display = fmt_steps(context_min["steps"])
