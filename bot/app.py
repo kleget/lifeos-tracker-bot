@@ -320,6 +320,12 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if data.get("_sleep_start"):
         rows.append([InlineKeyboardButton("☀️ Я проснулся", callback_data="sleep:toggle")])
+        rows.append(
+            [
+                InlineKeyboardButton("✏️ Исправить отбой", callback_data="sleep:edit"),
+                InlineKeyboardButton("↩️ Отменить сон", callback_data="sleep:cancel"),
+            ]
+        )
         return InlineKeyboardMarkup(rows)
 
     rows.append([InlineKeyboardButton("😴 Лёг спать", callback_data="sleep:toggle")])
@@ -1708,6 +1714,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             build_keyboard([("⬅️ Назад", "menu:leisure")], cols=1),
         )
         return
+    if data == "sleep:edit":
+        await query.answer()
+        context.user_data["expect"] = "sleep_bed_edit"
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "Во сколько реально заснул? (HH:MM)",
+            build_keyboard([("⬅️ Назад", "menu:main")], cols=1),
+        )
+        return
+    if data == "sleep:cancel":
+        await query.answer()
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "Отменить сон?",
+            build_keyboard(
+                [("✅ Отменить сон", "sleep:cancel_yes"), ("☀️ Я проснулся", "sleep:cancel_wake")],
+                cols=2,
+                back=("⬅️ Назад", "menu:main"),
+            ),
+        )
+        return
+    if data == "sleep:cancel_yes":
+        await query.answer()
+        sheets.set_state(STATE_SLEEP_START, None)
+        sheets.set_state(STATE_SLEEP_START_DAY, None)
+        sheets.set_state(STATE_SLEEP_START_BED, None)
+        await clear_prompt(context, query.message.chat_id)
+        await render_summary(context, query.message.chat_id, date_str)
+        return
+    if data == "sleep:cancel_wake":
+        data = "sleep:toggle"
     if data == "shots:+" or data == "shots:-":
         daily = get_daily_data(context, date_str)
         count = int(parse_sheet_number(daily.get("Стрельнул_раз")))
@@ -2089,6 +2128,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sheets.set_state(STATE_SLEEP_START_DAY, None)
         sheets.set_state(STATE_SLEEP_START_BED, None)
         sheets.set_state(STATE_ACTIVE_DAY, wake_dt.strftime("%Y-%m-%d"))
+        context.user_data.clear()
+        await finalize_input(context, chat_id, update.message.message_id)
+        return
+
+    if expect == "sleep_bed_edit":
+        try:
+            hours, minutes = parse_time_hhmm(text)
+        except ValueError:
+            await send_or_edit_prompt(context, chat_id, "Нужно время в формате HH:MM (например 00:30).")
+            return
+        cfg = context.application.bot_data["config"]
+        now = get_now(cfg.timezone)
+        sleep_start_raw = sheets.get_state(STATE_SLEEP_START)
+        if not sleep_start_raw:
+            context.user_data.clear()
+            await send_or_edit_prompt(context, chat_id, "Сон сейчас не запущен. Нажми «Лёг спать».")
+            return
+        try:
+            start_dt = datetime.fromisoformat(sleep_start_raw)
+        except ValueError:
+            start_dt = now
+        candidate = start_dt.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+        if candidate < start_dt:
+            candidate = candidate + timedelta(days=1)
+        if candidate > now:
+            await send_or_edit_prompt(context, chat_id, "Время сна не может быть позже текущего.")
+            return
+        sheets.set_state(STATE_SLEEP_START, candidate.isoformat())
+        sheets.set_state(STATE_SLEEP_START_DAY, candidate.strftime("%Y-%m-%d"))
+        sheets.set_state(STATE_SLEEP_START_BED, candidate.strftime("%H:%M"))
         context.user_data.clear()
         await finalize_input(context, chat_id, update.message.message_id)
         return
