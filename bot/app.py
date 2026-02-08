@@ -486,7 +486,12 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(rows)
 
     rows.append([InlineKeyboardButton("😴 Лёг спать", callback_data="sleep:toggle")])
-    rows.append([InlineKeyboardButton("🔄 Обновить", callback_data="menu:refresh")])
+    rows.append(
+        [
+            InlineKeyboardButton("🔄 Обновить", callback_data="menu:refresh"),
+            InlineKeyboardButton("📊 Статистика", callback_data="stats:week"),
+        ]
+    )
     row: list[InlineKeyboardButton] = []
     for label, payload in MAIN_MENU:
         row.append(InlineKeyboardButton(label, callback_data=payload))
