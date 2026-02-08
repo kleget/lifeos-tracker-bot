@@ -316,6 +316,163 @@ async def finalize_input(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
     await render_summary(context, chat_id)
 
 
+def build_stats_keyboard(selected: str) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(("✅ " if selected == "all" else "") + "Все", callback_data="stats:all"),
+            InlineKeyboardButton(("✅ " if selected == "month" else "") + "30д", callback_data="stats:month"),
+            InlineKeyboardButton(("✅ " if selected == "week" else "") + "7д", callback_data="stats:week"),
+        ],
+        [InlineKeyboardButton("⬅️ К сводке", callback_data="stats:back")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def avg_value(total: float, count: int, digits: int = 0) -> str:
+    if count <= 0:
+        return "—"
+    return fmt_num(total / count, digits)
+
+
+def stats_period_dates(dates: list[str], period: str, tz_name: str) -> tuple[str, list[str]]:
+    today = get_now(tz_name).date()
+    if period == "week":
+        start = today - timedelta(days=6)
+        label = "7 дней"
+    elif period == "month":
+        start = today - timedelta(days=29)
+        label = "30 дней"
+    else:
+        start = None
+        label = "всё время"
+    if start is None:
+        return label, dates
+    start_str = start.isoformat()
+    return label, [d for d in dates if d >= start_str]
+
+
+def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
+    cfg = context.application.bot_data["config"]
+    db = get_sheets(context)
+    dates = db.get_daily_dates()
+    label, dates = stats_period_dates(dates, period, cfg.timezone)
+    if not dates:
+        return f"📊 Статистика ({label})\nНет данных."
+
+    full = partial = none = tracked = 0
+    quality_sum = quality_count = 0
+    sleep_sum = sleep_count = 0
+    steps_sum = steps_count = 0
+    kcal_sum = prot_sum = fat_sum = carb_sum = 0.0
+    kbju_count = 0
+    eng_sum = eng_count = 0
+    ml_sum = ml_count = 0
+    alg_sum = alg_count = 0
+    uni_sum = uni_count = 0
+
+    for date_str in dates:
+        data = get_daily_data(context, date_str)
+        status = day_completion_status(data)
+        if status == "empty":
+            continue
+        tracked += 1
+        if status == "full":
+            full += 1
+        elif status == "partial":
+            partial += 1
+        else:
+            none += 1
+
+        quality = compute_quality(data)
+        if quality is not None:
+            quality_sum += quality
+            quality_count += 1
+
+        sleep = parse_sleep_hours(data.get("Сон_часы")) or 0.0
+        nap = parse_sheet_number(data.get("Сон_дневной"))
+        sleep_total = sleep + max(0.0, nap)
+        if sleep_total > 0:
+            sleep_sum += sleep_total
+            sleep_count += 1
+
+        steps = steps_value(data)
+        if steps > 0:
+            steps_sum += steps
+            steps_count += 1
+
+        kcal = data.get("Еда_ккал")
+        protein = data.get("Еда_Б")
+        fat = data.get("Еда_Ж")
+        carbs = data.get("Еда_У")
+        if any(is_set(v) for v in (kcal, protein, fat, carbs)):
+            kcal_sum += parse_sheet_number(kcal)
+            prot_sum += parse_sheet_number(protein)
+            fat_sum += parse_sheet_number(fat)
+            carb_sum += parse_sheet_number(carbs)
+            kbju_count += 1
+
+        english = int(parse_sheet_number(data.get("Английский_мин")))
+        if english > 0:
+            eng_sum += english
+            eng_count += 1
+        ml = int(parse_sheet_number(data.get("ML_мин")))
+        if ml > 0:
+            ml_sum += ml
+            ml_count += 1
+        algos = int(parse_sheet_number(data.get("Алгосы_мин")))
+        if algos > 0:
+            alg_sum += algos
+            alg_count += 1
+        uni = int(parse_sheet_number(data.get("ВУЗ_мин")))
+        if uni > 0:
+            uni_sum += uni
+            uni_count += 1
+
+    if tracked == 0:
+        return f"📊 Статистика ({label})\nНет данных."
+
+    full_pct = int(round(full / tracked * 100))
+    partial_pct = int(round(partial / tracked * 100))
+    none_pct = int(round(none / tracked * 100))
+
+    avg_quality = avg_value(quality_sum, quality_count, 0)
+    avg_sleep = avg_value(sleep_sum, sleep_count, 1)
+    avg_steps = avg_value(steps_sum, steps_count, 0)
+    if kbju_count:
+        kbju_line = (
+            f"{avg_value(kcal_sum, kbju_count, 0)} | Б {avg_value(prot_sum, kbju_count, 0)} | "
+            f"Ж {avg_value(fat_sum, kbju_count, 0)} | У {avg_value(carb_sum, kbju_count, 0)}"
+        )
+    else:
+        kbju_line = "—"
+
+    study_line = (
+        f"англ {avg_value(eng_sum, eng_count, 0)}м · "
+        f"ml {avg_value(ml_sum, ml_count, 0)}м · "
+        f"алг {avg_value(alg_sum, alg_count, 0)}м · "
+        f"вуз {avg_value(uni_sum, uni_count, 0)}м"
+    )
+
+    lines = [
+        f"📊 Статистика ({label})",
+        f"Дней в выборке: {tracked}",
+        f"✅ Полных: {full_pct}% ({full})",
+        f"🟧 Частичных: {partial_pct}% ({partial})",
+        f"❌ Провалов: {none_pct}% ({none})",
+        f"⭐ Качество ср.: {avg_quality}",
+        f"😴 Сон ср.: {avg_sleep} ч",
+        f"🚶 Шаги ср.: {avg_steps}",
+        f"🍽 КБЖУ ср.: {kbju_line}",
+        f"📚 Учеба ср.: {study_line}",
+    ]
+    return "\n".join(lines)
+
+
+async def render_stats(context: ContextTypes.DEFAULT_TYPE, chat_id: int, period: str = "week") -> None:
+    text = build_stats_summary(context, period)
+    await send_or_edit_summary(context, chat_id, text, build_stats_keyboard(period))
+
+
 def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if data.get("_sleep_start"):
@@ -1386,6 +1543,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if query.message is not None:
             db.set_state(summary_state_key(query.message.chat_id), str(query.message.message_id))
         await render_summary(context, query.message.chat_id, date_str)
+        return
+    if data.startswith("stats:"):
+        await query.answer()
+        if data == "stats:back":
+            await render_summary(context, query.message.chat_id, date_str)
+            return
+        period = data.split(":", 1)[1]
+        await render_stats(context, query.message.chat_id, period)
         return
     if data == "menu:sport":
         daily = get_daily_data(context, date_str)
@@ -2540,6 +2705,16 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
 
 
+async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(context, update.effective_user.id if update.effective_user else None):
+        return
+    if update.message is None:
+        return
+    await clear_prompt(context, update.effective_chat.id)
+    await render_stats(context, update.effective_chat.id, "week")
+    await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
+
+
 def parse_sync_payload(text: str) -> dict:
     parts = text.split(maxsplit=1)
     if len(parts) < 2:
@@ -2729,6 +2904,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CommandHandler("sync", sync_command))
+    app.add_handler(CommandHandler("static", static_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(handle_error)
