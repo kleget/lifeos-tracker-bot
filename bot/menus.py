@@ -43,6 +43,7 @@ SPORT_MENU = [
 TRAINING_OPTIONS = [
     ("Верх", "set:training:Верх"),
     ("Низ", "set:training:Ноги"),
+    ("Фулл", "set:training:Фулл"),
 ]
 
 CARDIO_OPTIONS = [

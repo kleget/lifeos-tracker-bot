@@ -783,7 +783,7 @@ def score_kbju(training_value: str | None, macros: dict) -> list[float]:
     fat = macros["fat"]
     carb = macros["carb"]
 
-    training_day = training_value in {"Ноги", "Верх", "Низ"}
+    training_day = training_value in {"Ноги", "Верх", "Низ", "Фулл"}
 
     if training_day:
         kcal_ranges = [(1900, 2050, 1), (1850, 1899, 0.7), (2051, 2100, 0.7)]
@@ -893,7 +893,7 @@ def compute_quality(data: dict) -> int | None:
     uni_bonus = bonus_linear(uni, 30.0, 180.0, 15.0)
 
     training = context["training"]
-    if training in {"Верх", "Ноги", "Низ"}:
+    if training in {"Верх", "Ноги", "Низ", "Фулл"}:
         sport_score = 1.0
     elif training == "Отдых":
         sport_score = 0.4
@@ -1136,7 +1136,7 @@ FIELD_LABELS = {
 
 def build_sport_menu(data: dict) -> list[tuple[str, str]]:
     training = data.get("Тренировка")
-    training_display = display_training(training) if training in {"Ноги", "Верх", "Низ"} else None
+    training_display = display_training(training) if training in {"Ноги", "Верх", "Низ", "Фулл"} else None
     training_selected = training_display is not None
     training_label = "Тренировка"
     if training_display:
