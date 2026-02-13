@@ -38,19 +38,29 @@ object SyncService {
                 return SyncResult(false, "Permissions not granted")
             }
 
-            val metrics = hc.readMetrics()
-            settings.nutritionSource = metrics.nutritionSource ?: ""
-            settings.nutritionOrigins = metrics.nutritionOrigins.joinToString(",")
-            val payload = buildPayload(metrics)
-            val ok = postJson(baseUrl, token, payload)
-            return if (ok) {
+            val zone = ZoneId.systemDefault()
+            val today = LocalDate.now(zone)
+            val yesterday = today.minusDays(1)
+            val yesterdayMetrics = hc.readMetricsForDate(yesterday)
+            val todayMetrics = hc.readMetricsForDate(today)
+            settings.nutritionSource = todayMetrics.nutritionSource ?: ""
+            settings.nutritionOrigins = todayMetrics.nutritionOrigins.joinToString(",")
+
+            val okYesterday = postJson(baseUrl, token, buildPayload(yesterdayMetrics))
+            val okToday = postJson(baseUrl, token, buildPayload(todayMetrics))
+            return if (okYesterday && okToday) {
                 val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                 settings.lastSync = stamp
                 settings.lastError = ""
                 SyncResult(true, "Sync ok")
             } else {
-                settings.lastError = "Sync failed"
-                SyncResult(false, "Sync failed")
+                val failText = buildString {
+                    append("Sync failed:")
+                    if (!okYesterday) append(" yesterday")
+                    if (!okToday) append(" today")
+                }
+                settings.lastError = failText
+                SyncResult(false, failText)
             }
         } catch (e: Exception) {
             val msg = "Sync error: ${e.message ?: "unknown"}"
@@ -60,10 +70,8 @@ object SyncService {
     }
 
     private fun buildPayload(metrics: SyncMetrics): String {
-        val zone = ZoneId.systemDefault()
-        val date = LocalDate.now(zone).toString()
         val json = JSONObject()
-        json.put("date", date)
+        json.put("date", metrics.date.toString())
         json.put("steps", metrics.steps ?: 0)
         json.put("sleep_hours", roundOne(metrics.sleepHours ?: 0.0))
         json.put("weight", roundOne(metrics.weightKg ?: 0.0))

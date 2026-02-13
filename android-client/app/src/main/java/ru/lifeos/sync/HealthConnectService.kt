@@ -15,8 +15,11 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import kotlin.math.max
+import kotlin.math.min
 
 data class SyncMetrics(
+    val date: LocalDate,
     val steps: Long?,
     val sleepHours: Double?,
     val weightKg: Double?,
@@ -81,26 +84,32 @@ class HealthConnectService(private val context: Context) {
     }
 
     suspend fun readMetrics(): SyncMetrics {
-        val client = client()
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        val startOfDay = today.atStartOfDay(zone).toInstant()
-        val now = Instant.now()
+        return readMetricsForDate(today)
+    }
+
+    suspend fun readMetricsForDate(targetDate: LocalDate): SyncMetrics {
+        val client = client()
+        val zone = ZoneId.systemDefault()
+        val startOfDay = targetDate.atStartOfDay(zone).toInstant()
+        val endOfDay = targetDate.plusDays(1).atStartOfDay(zone).toInstant()
 
         val stepsAgg = client.aggregate(
             AggregateRequest(
                 metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = TimeRangeFilter.between(startOfDay, now),
+                timeRangeFilter = TimeRangeFilter.between(startOfDay, endOfDay),
             )
         )
         val steps = stepsAgg[StepsRecord.COUNT_TOTAL]
 
-        val nutrition = readNutritionTotals(client, startOfDay, now)
+        val nutrition = readNutritionTotals(client, startOfDay, endOfDay)
 
-        val sleepHours = readLatestSleepHours(client, now)
-        val weightKg = readLatestWeight(client, now)
+        val sleepHours = readSleepHoursForDate(client, startOfDay, endOfDay)
+        val weightKg = readLatestWeight(client, endOfDay)
 
         return SyncMetrics(
+            date = targetDate,
             steps = steps,
             sleepHours = sleepHours,
             weightKg = weightKg,
@@ -127,17 +136,29 @@ class HealthConnectService(private val context: Context) {
         return resolveProviderPackageName()
     }
 
-    private suspend fun readLatestSleepHours(client: HealthConnectClient, now: Instant): Double? {
-        val start = now.minus(Duration.ofHours(36))
+    private suspend fun readSleepHoursForDate(
+        client: HealthConnectClient,
+        dayStart: Instant,
+        dayEnd: Instant,
+    ): Double? {
+        val start = dayStart.minus(Duration.ofHours(12))
+        val end = dayEnd.plus(Duration.ofHours(12))
         val records = client.readRecords(
             ReadRecordsRequest(
                 recordType = SleepSessionRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(start, now),
+                timeRangeFilter = TimeRangeFilter.between(start, end),
             )
         ).records
-        val latest = records.maxByOrNull { it.endTime } ?: return null
-        val duration = Duration.between(latest.startTime, latest.endTime)
-        return duration.toMinutes().toDouble() / 60.0
+        var totalMillis = 0L
+        for (record in records) {
+            val overlapStart = max(record.startTime.toEpochMilli(), dayStart.toEpochMilli())
+            val overlapEnd = min(record.endTime.toEpochMilli(), dayEnd.toEpochMilli())
+            if (overlapEnd > overlapStart) {
+                totalMillis += (overlapEnd - overlapStart)
+            }
+        }
+        if (totalMillis <= 0L) return null
+        return totalMillis.toDouble() / 3_600_000.0
     }
 
     private suspend fun readLatestWeight(client: HealthConnectClient, now: Instant): Double? {
