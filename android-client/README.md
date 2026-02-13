@@ -15,6 +15,9 @@ Minimal Android client that reads data from Health Connect and sends it to the L
 6. Tap **Sync Now** to test.
 
 ## Notes
-- Auto sync runs every 30 minutes (WorkManager).
+- Auto sync runs every 15 minutes (WorkManager).
+- Each sync sends two days: yesterday and today (prevents late-night data loss).
+- No persistent foreground notification is required.
+- On some devices, battery optimization can delay background sync; set app battery mode to unrestricted for best reliability.
 - Uses HTTP; if you switch to HTTPS later, update the URL.
 - Required metrics: steps, sleep, weight, KBJU (nutrition).

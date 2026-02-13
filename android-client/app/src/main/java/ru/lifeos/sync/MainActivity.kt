@@ -36,6 +36,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnSave.setOnClickListener {
             settings.serverUrl = binding.editServerUrl.text.toString()
             settings.token = binding.editToken.text.toString()
+            if (settings.serverUrl.isNotBlank() && settings.token.isNotBlank()) {
+                SyncWorker.schedulePeriodic(this)
+                SyncWorker.enqueueOnce(this)
+            }
             toast("Saved.")
             refreshStatus()
         }
@@ -55,6 +59,11 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnOpenHealthConnect.setOnClickListener {
             openHealthConnect()
+        }
+
+        if (settings.serverUrl.isNotBlank() && settings.token.isNotBlank()) {
+            SyncWorker.schedulePeriodic(this)
+            SyncWorker.enqueueOnce(this)
         }
 
         refreshStatus()
