@@ -2728,8 +2728,25 @@ def parse_sync_payload(text: str) -> dict:
     return json.loads(raw)
 
 
+def resolve_sync_date(db: Database, cfg, payload_date: object) -> str:
+    today = today_str(cfg.timezone)
+    active_day = db.get_state(STATE_ACTIVE_DAY) or today
+    if not payload_date:
+        return active_day
+
+    incoming = str(payload_date).strip()
+    if incoming <= active_day:
+        return incoming
+
+    # Late-night window: map source "new day" sync back to the active day.
+    now = get_now(cfg.timezone)
+    if now.hour < 5 and active_day < incoming:
+        return active_day
+    return incoming
+
+
 def apply_sync_payload(db: Database, cfg, payload: dict) -> tuple[str, dict[str, object]]:
-    date_str = payload.get("date") or today_str(cfg.timezone)
+    date_str = resolve_sync_date(db, cfg, payload.get("date"))
     db.ensure_daily_row(date_str)
 
     row = db.get_daily_row(date_str) or {}

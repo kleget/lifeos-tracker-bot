@@ -72,6 +72,7 @@ STUDY_MENU = [
 ]
 
 ENGLISH_OPTIONS = [
+    ("0", "set:english:0"),
     ("15м", "set:english:15"),
     ("30м", "set:english:30"),
     ("45м", "set:english:45"),
@@ -81,30 +82,45 @@ ENGLISH_OPTIONS = [
 ]
 
 ML_OPTIONS = [
+    ("0", "set:ml:0"),
     ("30м", "set:ml:30"),
     ("1ч", "set:ml:60"),
     ("1.5ч", "set:ml:90"),
     ("2ч", "set:ml:120"),
     ("2.5ч", "set:ml:150"),
     ("3ч", "set:ml:180"),
+    ("4ч", "set:ml:240"),
+    ("5ч", "set:ml:300"),
+    ("6ч", "set:ml:360"),
+    ("7ч", "set:ml:420"),
 ]
 
 ALGOS_OPTIONS = [
+    ("0", "set:algos:0"),
     ("30м", "set:algos:30"),
     ("1ч", "set:algos:60"),
     ("1.5ч", "set:algos:90"),
     ("2ч", "set:algos:120"),
     ("2.5ч", "set:algos:150"),
     ("3ч", "set:algos:180"),
+    ("4ч", "set:algos:240"),
+    ("5ч", "set:algos:300"),
+    ("6ч", "set:algos:360"),
+    ("7ч", "set:algos:420"),
 ]
 
 UNI_OPTIONS = [
+    ("0", "set:uni:0"),
     ("30м", "set:uni:30"),
     ("1ч", "set:uni:60"),
     ("1.5ч", "set:uni:90"),
     ("2ч", "set:uni:120"),
     ("2.5ч", "set:uni:150"),
     ("3ч", "set:uni:180"),
+    ("4ч", "set:uni:240"),
+    ("5ч", "set:uni:300"),
+    ("6ч", "set:uni:360"),
+    ("7ч", "set:uni:420"),
 ]
 
 CODE_MODE_OPTIONS = [
