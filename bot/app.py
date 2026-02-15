@@ -325,10 +325,24 @@ async def render_summary(context: ContextTypes.DEFAULT_TYPE, chat_id: int, date_
     await send_or_edit_summary(context, chat_id, summary, build_main_menu_keyboard(daily))
 
 
+async def safe_render_summary(context: ContextTypes.DEFAULT_TYPE, chat_id: int, date_str: str | None = None) -> None:
+    try:
+        await render_summary(context, chat_id, date_str)
+    except Exception:
+        LOGGER.exception("Failed to render summary")
+        db = get_sheets(context)
+        set_view_date(context, None)
+        fallback_date = get_active_date(context)
+        db.ensure_daily_row(fallback_date)
+        daily = get_daily_data(context, fallback_date)
+        text = f"📅 Сегодня: {fallback_date}\nПока нет данных."
+        await send_or_edit_summary(context, chat_id, text, build_main_menu_keyboard(daily))
+
+
 async def finalize_input(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_message_id: int) -> None:
     await clear_prompt(context, chat_id)
     await safe_delete_message(context.bot, chat_id, user_message_id)
-    await render_summary(context, chat_id, get_view_date(context))
+    await safe_render_summary(context, chat_id, get_view_date(context))
 
 
 def build_stats_keyboard(selected: str) -> InlineKeyboardMarkup:
@@ -657,7 +671,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if old_summary_id:
         await safe_delete_message(context.bot, chat_id, old_summary_id)
         db.set_state(summary_state_key(chat_id), None)
-    await render_summary(context, chat_id, date_str)
+    await safe_render_summary(context, chat_id, date_str)
     await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
 
 
@@ -1651,19 +1665,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         db = get_sheets(context)
         if query.message is not None:
             db.set_state(summary_state_key(query.message.chat_id), str(query.message.message_id))
-        await render_summary(context, query.message.chat_id, date_str)
+        await safe_render_summary(context, query.message.chat_id, date_str)
         return
     if data == "menu:refresh":
         await query.answer()
         db = get_sheets(context)
         if query.message is not None:
             db.set_state(summary_state_key(query.message.chat_id), str(query.message.message_id))
-        await render_summary(context, query.message.chat_id, date_str)
+        await safe_render_summary(context, query.message.chat_id, date_str)
         return
     if data.startswith("stats:"):
         await query.answer()
         if data == "stats:back":
-            await render_summary(context, query.message.chat_id, date_str)
+            await safe_render_summary(context, query.message.chat_id, date_str)
             return
         period = data.split(":", 1)[1]
         await render_stats(context, query.message.chat_id, period)
@@ -1685,14 +1699,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer()
         set_view_date(context, get_active_date(context))
         await clear_prompt(context, query.message.chat_id)
-        await render_summary(context, query.message.chat_id, get_view_date(context))
+        await safe_render_summary(context, query.message.chat_id, get_view_date(context))
         return
     if data == "date:yesterday":
         await query.answer()
         yday = (get_now(cfg.timezone).date() - timedelta(days=1)).isoformat()
         set_view_date(context, yday)
         await clear_prompt(context, query.message.chat_id)
-        await render_summary(context, query.message.chat_id, get_view_date(context))
+        await safe_render_summary(context, query.message.chat_id, get_view_date(context))
         return
     if data == "date:pick":
         await query.answer()
@@ -2060,7 +2074,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         sheets.set_state(STATE_SLEEP_START_DAY, None)
         sheets.set_state(STATE_SLEEP_START_BED, None)
         await clear_prompt(context, query.message.chat_id)
-        await render_summary(context, query.message.chat_id, date_str)
+        await safe_render_summary(context, query.message.chat_id, date_str)
         return
     if data == "sleep:cancel_wake":
         data = "sleep:toggle"
