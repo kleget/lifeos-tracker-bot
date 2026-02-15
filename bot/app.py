@@ -2902,21 +2902,25 @@ def parse_sync_payload(text: str) -> dict:
     return json.loads(raw)
 
 
-def resolve_sync_date(db: Database, cfg, payload_date: object) -> str:
+def resolve_sync_date(db: Database, cfg, payload_date: object) -> tuple[str, bool]:
     today = today_str(cfg.timezone)
     active_day = db.get_state(STATE_ACTIVE_DAY) or today
     if not payload_date:
-        return active_day
+        return active_day, True
 
     incoming = str(payload_date).strip()
     # While active day is not rolled over by wake-up, never let sync jump ahead.
+    # Ignore future-day payloads to avoid overwriting active day with "new day zeros".
     if incoming > active_day:
-        return active_day
-    return incoming
+        return active_day, False
+    return incoming, True
 
 
 def apply_sync_payload(db: Database, cfg, payload: dict) -> tuple[str, dict[str, object]]:
-    date_str = resolve_sync_date(db, cfg, payload.get("date"))
+    date_str, accepted = resolve_sync_date(db, cfg, payload.get("date"))
+    if not accepted:
+        LOGGER.info("Ignoring sync payload for future date %s while active_day=%s", payload.get("date"), date_str)
+        return date_str, {}
     db.ensure_daily_row(date_str)
 
     row = db.get_daily_row(date_str) or {}
