@@ -366,11 +366,39 @@ def stats_period_dates(dates: list[str], period: str, tz_name: str) -> tuple[str
     return label, [d for d in dates if d >= start_str]
 
 
+def shooting_activity_label(last7_total: int, last7_shot_days: int) -> str:
+    if last7_shot_days == 7 and last7_total >= 21:
+        return "супер активно"
+    if last7_total >= 12 and last7_shot_days >= 4:
+        return "активно"
+    if last7_total >= 6 and last7_shot_days >= 3:
+        return "умеренно"
+    if last7_total >= 2:
+        return "очень мало"
+    if last7_total == 1:
+        return "единично"
+    return "нет активности"
+
+
+def rolling_window_max(values: list[int], window: int) -> int:
+    if not values:
+        return 0
+    if window <= 1:
+        return max(values)
+    current = sum(values[:window])
+    best = current
+    for idx in range(window, len(values)):
+        current += values[idx] - values[idx - window]
+        if current > best:
+            best = current
+    return best
+
+
 def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     cfg = context.application.bot_data["config"]
     db = get_sheets(context)
-    dates = db.get_daily_dates()
-    label, dates = stats_period_dates(dates, period, cfg.timezone)
+    all_dates = db.get_daily_dates()
+    label, dates = stats_period_dates(all_dates, period, cfg.timezone)
     if not dates:
         return f"📊 Статистика ({label})\nНет данных."
 
@@ -384,6 +412,20 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     ml_sum = ml_count = 0
     alg_sum = alg_count = 0
     uni_sum = uni_count = 0
+    shots_period_total = shots_period_days = 0
+    shots_by_date: dict[str, int] = {}
+    last_shot_date: str | None = None
+
+    for date_str in all_dates:
+        data = get_daily_data(context, date_str)
+        shots = int(parse_sheet_number(data.get("Стрельнул_раз")))
+        shots_by_date[date_str] = shots
+        if shots > 0:
+            last_shot_date = date_str
+        if date_str in dates and shots > 0:
+            shots_period_days += 1
+        if date_str in dates:
+            shots_period_total += shots
 
     for date_str in dates:
         data = get_daily_data(context, date_str)
@@ -468,6 +510,45 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
         f"вуз {avg_value(uni_sum, uni_count, 0)}м"
     )
 
+    period_span = len(dates)
+    shot_freq_pct = int(round((shots_period_days / period_span) * 100)) if period_span > 0 else 0
+    shots_avg_day = fmt_num(shots_period_total / period_span, 1) if period_span > 0 else "—"
+
+    active_day = db.get_state(STATE_ACTIVE_DAY) or today_str(cfg.timezone)
+    if last_shot_date:
+        days_no_shot = max(
+            0,
+            (datetime.fromisoformat(active_day).date() - datetime.fromisoformat(last_shot_date).date()).days,
+        )
+    else:
+        days_no_shot = period_span
+
+    if all_dates:
+        series_start = datetime.fromisoformat(all_dates[0]).date()
+        series_end = datetime.fromisoformat(active_day).date()
+        span = (series_end - series_start).days + 1
+        by_day = [0] * max(1, span)
+        for d, value in shots_by_date.items():
+            idx = (datetime.fromisoformat(d).date() - series_start).days
+            if 0 <= idx < len(by_day):
+                by_day[idx] = value
+        max_week = rolling_window_max(by_day, 7)
+        max_month = rolling_window_max(by_day, 30)
+        max_all = sum(by_day)
+    else:
+        max_week = max_month = max_all = 0
+
+    last7_start = datetime.fromisoformat(active_day).date() - timedelta(days=6)
+    last7_total = 0
+    last7_days = 0
+    for i in range(7):
+        day = (last7_start + timedelta(days=i)).isoformat()
+        value = shots_by_date.get(day, 0)
+        last7_total += value
+        if value > 0:
+            last7_days += 1
+    shoot_activity = shooting_activity_label(last7_total, last7_days)
+
     lines = [
         f"📊 Статистика ({label})",
         f"Дней в выборке: {tracked}",
@@ -479,6 +560,12 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
         f"🚶 Шаги ср.: {avg_steps}",
         f"🍽 КБЖУ ср.: {kbju_line}",
         f"📚 Учеба ср.: {study_line}",
+        "",
+        f"🎯 Стрельба: {shoot_activity}",
+        f"• Частота: {shot_freq_pct}% дней ({shots_period_days}/{period_span})",
+        f"• Ср. за день: {shots_avg_day} раз",
+        f"• Без стрельбы: {days_no_shot} дн",
+        f"• Пик: 7д {max_week} | 30д {max_month} | всё {max_all}",
     ]
     return "\n".join(lines)
 
