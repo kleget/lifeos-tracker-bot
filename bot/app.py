@@ -202,6 +202,7 @@ STATE_ACTIVE_DAY = "active_day"
 STATE_SLEEP_START = "sleep_start"
 STATE_SLEEP_START_DAY = "sleep_start_day"
 STATE_SLEEP_START_BED = "sleep_start_bed"
+STATE_VIEW_DATE = "view_date"
 
 
 def get_active_date(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -213,6 +214,20 @@ def get_active_date(context: ContextTypes.DEFAULT_TYPE) -> str:
         db.set_state(STATE_ACTIVE_DAY, today)
         return today
     return active
+
+
+def get_view_date(context: ContextTypes.DEFAULT_TYPE) -> str:
+    selected = context.user_data.get(STATE_VIEW_DATE)
+    if selected:
+        return str(selected)
+    return get_active_date(context)
+
+
+def set_view_date(context: ContextTypes.DEFAULT_TYPE, date_str: str | None) -> None:
+    if date_str:
+        context.user_data[STATE_VIEW_DATE] = date_str
+    else:
+        context.user_data.pop(STATE_VIEW_DATE, None)
 
 
 def get_sleep_start(context: ContextTypes.DEFAULT_TYPE) -> datetime | None:
@@ -313,7 +328,7 @@ async def render_summary(context: ContextTypes.DEFAULT_TYPE, chat_id: int, date_
 async def finalize_input(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_message_id: int) -> None:
     await clear_prompt(context, chat_id)
     await safe_delete_message(context.bot, chat_id, user_message_id)
-    await render_summary(context, chat_id)
+    await render_summary(context, chat_id, get_view_date(context))
 
 
 def build_stats_keyboard(selected: str) -> InlineKeyboardMarkup:
@@ -475,6 +490,8 @@ async def render_stats(context: ContextTypes.DEFAULT_TYPE, chat_id: int, period:
 
 def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    viewing_date = str(data.get("Дата") or "")
+    active_date = str(data.get("_active_day") or "")
     if data.get("_sleep_start"):
         rows.append([InlineKeyboardButton("☀️ Я проснулся", callback_data="sleep:toggle")])
         rows.append(
@@ -483,6 +500,9 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("↩️ Отменить сон", callback_data="sleep:cancel"),
             ]
         )
+        rows.append([InlineKeyboardButton("📅 Дата", callback_data="menu:date")])
+        if active_date and viewing_date and viewing_date != active_date:
+            rows.append([InlineKeyboardButton("↩️ К текущему дню", callback_data="date:today")])
         return InlineKeyboardMarkup(rows)
 
     rows.append([InlineKeyboardButton("😴 Лёг спать", callback_data="sleep:toggle")])
@@ -492,6 +512,9 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📊 Статистика", callback_data="stats:week"),
         ]
     )
+    rows.append([InlineKeyboardButton("📅 Дата", callback_data="menu:date")])
+    if active_date and viewing_date and viewing_date != active_date:
+        rows.append([InlineKeyboardButton("↩️ К текущему дню", callback_data="date:today")])
     row: list[InlineKeyboardButton] = []
     for label, payload in MAIN_MENU:
         row.append(InlineKeyboardButton(label, callback_data=payload))
@@ -536,6 +559,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(context, update.effective_user.id if update.effective_user else None):
         return
     cfg = context.application.bot_data["config"]
+    set_view_date(context, None)
     date_str = get_active_date(context)
     db = get_sheets(context)
     db.ensure_daily_row(date_str)
@@ -1500,7 +1524,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
-    date_str = get_active_date(context)
+    date_str = get_view_date(context)
     sheets.ensure_daily_row(date_str)
 
     if data.startswith("confirm:"):
@@ -1556,6 +1580,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         period = data.split(":", 1)[1]
         await render_stats(context, query.message.chat_id, period)
+        return
+    if data == "menu:date":
+        await query.answer()
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "Выбери дату просмотра:",
+            build_keyboard(
+                [("Сегодня", "date:today"), ("Вчера", "date:yesterday"), ("Ввести дату", "date:pick")],
+                cols=2,
+                back=("⬅️ Назад", "menu:main"),
+            ),
+        )
+        return
+    if data == "date:today":
+        await query.answer()
+        set_view_date(context, get_active_date(context))
+        await clear_prompt(context, query.message.chat_id)
+        await render_summary(context, query.message.chat_id, get_view_date(context))
+        return
+    if data == "date:yesterday":
+        await query.answer()
+        yday = (get_now(cfg.timezone).date() - timedelta(days=1)).isoformat()
+        set_view_date(context, yday)
+        await clear_prompt(context, query.message.chat_id)
+        await render_summary(context, query.message.chat_id, get_view_date(context))
+        return
+    if data == "date:pick":
+        await query.answer()
+        context.user_data["expect"] = "view_date"
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "Введи дату в формате YYYY-MM-DD (например 2026-02-12)",
+            build_keyboard([("⬅️ Назад", "menu:main")], cols=1),
+        )
         return
     if data == "menu:sport":
         daily = get_daily_data(context, date_str)
@@ -2196,9 +2256,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
-    date_str = get_active_date(context)
+    date_str = get_view_date(context)
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
+
+    if expect == "view_date":
+        try:
+            picked = datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            await send_or_edit_prompt(context, chat_id, "Неверный формат. Используй YYYY-MM-DD")
+            return
+        set_view_date(context, picked)
+        context.user_data.pop("expect", None)
+        await finalize_input(context, chat_id, update.message.message_id)
+        return
 
     if expect == "weight":
         try:
@@ -2386,7 +2457,9 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     db = get_sheets(context)
     data = get_daily_data(context, date_str)
     if not data:
-        return "📅 Сегодня пока нет данных."
+        active_day = get_active_date(context)
+        date_label = "Сегодня" if date_str == active_day else "Дата"
+        return f"📅 {date_label}: {date_str}\nПока нет данных."
 
     macros = data.get("_macros") or {}
     kcal = macros.get("kcal", 0.0)
@@ -2397,9 +2470,9 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     min_ok, context_min = day_minimum_met(data)
     status = day_completion_status(data)
 
-    cfg = context.application.bot_data["config"]
-    calendar_date = today_str(cfg.timezone)
-    lines = [f"📅 Сегодня: {date_str}"]
+    active_day = data.get("_active_day")
+    date_label = "Сегодня" if str(active_day or "") == date_str else "Дата"
+    lines = [f"📅 {date_label}: {date_str}"]
 
     quality = fmt_value(data.get("Качество_дня"))
     if status == "full":
@@ -2735,12 +2808,8 @@ def resolve_sync_date(db: Database, cfg, payload_date: object) -> str:
         return active_day
 
     incoming = str(payload_date).strip()
-    if incoming <= active_day:
-        return incoming
-
-    # Late-night window: map source "new day" sync back to the active day.
-    now = get_now(cfg.timezone)
-    if now.hour < 5 and active_day < incoming:
+    # While active day is not rolled over by wake-up, never let sync jump ahead.
+    if incoming > active_day:
         return active_day
     return incoming
 
