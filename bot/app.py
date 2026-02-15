@@ -2555,6 +2555,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> str:
+    cfg = context.application.bot_data["config"]
+    calendar_date = today_str(cfg.timezone)
     db = get_sheets(context)
     data = get_daily_data(context, date_str)
     if not data:
