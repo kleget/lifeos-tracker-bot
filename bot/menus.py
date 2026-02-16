@@ -143,8 +143,18 @@ READING_OPTIONS = [("Не читал", "set:reading:0")] + [
 LEISURE_MENU = [
     ("Отдых", "leisure:rest"),
     ("Продуктивность", "leisure:productivity"),
+    ("💸 Траты", "leisure:expenses"),
     ("Дневной сон", "leisure:nap"),
     ("🧯 Анти‑прокраст.", "leisure:anti"),
+]
+
+EXPENSE_OPTIONS = [
+    ("Еда", "expense:add:food"),
+    ("Одежда", "expense:add:clothes"),
+    ("Бытовуха", "expense:add:household"),
+    ("Гульки", "expense:add:party"),
+    ("Здоровье", "expense:add:health"),
+    ("Другое", "expense:add:other"),
 ]
 
 NAP_OPTIONS = [

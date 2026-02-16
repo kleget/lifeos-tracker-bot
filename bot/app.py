@@ -46,6 +46,7 @@ from menus import (
     SLEEP_REGIME_OPTIONS,
     PRODUCTIVITY_OPTIONS,
     PROCRASTINATION_OPTIONS,
+    EXPENSE_OPTIONS,
     FOOD_MENU,
     FOOD_PROTEIN_OPTIONS,
     FOOD_GARNISH_OPTIONS,
@@ -89,6 +90,13 @@ DAILY_HEADERS = [
     "Стрельнул_раз",
     "Настроение",
     "Энергия",
+    "Траты_всего",
+    "Траты_еда",
+    "Траты_одежда",
+    "Траты_бытовуха",
+    "Траты_гульки",
+    "Траты_здоровье",
+    "Траты_другое",
     "Вес",
     "О_чем_жалею",
     "Отзыв_о_дне",
@@ -176,6 +184,24 @@ DB_TO_HEADER = {
 }
 
 NUMERIC_FIELDS = {"cardio", "english", "ml", "algos", "uni", "reading", "productivity"}
+
+EXPENSE_CATEGORY_LABELS = {
+    "food": "Еда",
+    "clothes": "Одежда",
+    "household": "Бытовуха",
+    "party": "Гульки",
+    "health": "Здоровье",
+    "other": "Другое",
+}
+
+EXPENSE_HEADER_BY_LABEL = {
+    "Еда": "Траты_еда",
+    "Одежда": "Траты_одежда",
+    "Бытовуха": "Траты_бытовуха",
+    "Гульки": "Траты_гульки",
+    "Здоровье": "Траты_здоровье",
+    "Другое": "Траты_другое",
+}
 
 
 def get_now(tz_name: str) -> datetime:
@@ -429,6 +455,11 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     shots_period_total = shots_period_days = 0
     shots_by_date: dict[str, int] = {}
     last_shot_date: str | None = None
+    expense_total_sum = 0.0
+    expense_days = 0
+    expense_max_day = 0.0
+    expense_max_date = ""
+    expense_by_category: dict[str, float] = {label: 0.0 for label in EXPENSE_HEADER_BY_LABEL}
 
     for date_str in all_dates:
         data = get_daily_data(context, date_str)
@@ -499,6 +530,16 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
             uni_sum += uni
             uni_count += 1
 
+        day_expense = parse_sheet_number(data.get("Траты_всего"))
+        if day_expense > 0:
+            expense_days += 1
+            if day_expense > expense_max_day:
+                expense_max_day = day_expense
+                expense_max_date = date_str
+        expense_total_sum += day_expense
+        for label, header in EXPENSE_HEADER_BY_LABEL.items():
+            expense_by_category[label] += parse_sheet_number(data.get(header))
+
     if tracked == 0:
         return f"📊 Статистика ({label})\nНет данных."
 
@@ -563,6 +604,19 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
             last7_days += 1
     shoot_activity = shooting_activity_label(last7_total, last7_days)
 
+    expense_avg_day = expense_total_sum / period_span if period_span > 0 else 0.0
+    expense_avg_spend_day = expense_total_sum / expense_days if expense_days > 0 else 0.0
+    expense_cat_parts: list[str] = []
+    if expense_total_sum > 0:
+        ranked = sorted(expense_by_category.items(), key=lambda x: x[1], reverse=True)
+        for label_name, value in ranked:
+            if value <= 0:
+                continue
+            share = int(round((value / expense_total_sum) * 100))
+            expense_cat_parts.append(f"{label_name.lower()} {fmt_money(value)}₽ ({share}%)")
+            if len(expense_cat_parts) >= 4:
+                break
+
     lines = [
         f"📊 Статистика ({label})",
         f"Дней в выборке: {tracked}",
@@ -580,7 +634,18 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
         f"• Ср. за день: {shots_avg_day} раз",
         f"• Без стрельбы: {days_no_shot} дн",
         f"• Пик: 7д {max_week} | 30д {max_month} | всё {max_all}",
+        "",
+        "💸 Траты",
+        f"• Итого: {fmt_money(expense_total_sum)} ₽",
+        f"• Ср. в день: {fmt_money(expense_avg_day)} ₽",
+        f"• Дней с тратами: {expense_days}/{period_span}",
     ]
+    if expense_days > 0:
+        lines.append(f"• Ср. в день с тратами: {fmt_money(expense_avg_spend_day)} ₽")
+    if expense_max_day > 0:
+        lines.append(f"• Макс. за день: {fmt_money(expense_max_day)} ₽ ({expense_max_date})")
+    if expense_cat_parts:
+        lines.append(f"• По категориям: {' · '.join(expense_cat_parts)}")
     return "\n".join(lines)
 
 
@@ -776,6 +841,13 @@ def fmt_num(value: float, digits: int = 0) -> str:
         return str(int(round(value)))
     formatted = f"{value:.{digits}f}".rstrip("0").rstrip(".")
     return formatted.replace(".", ",")
+
+
+def fmt_money(value: float) -> str:
+    rounded = round(value, 2)
+    if abs(rounded - round(rounded)) < 1e-6:
+        return str(int(round(rounded)))
+    return f"{rounded:.2f}".rstrip("0").rstrip(".").replace(".", ",")
 
 
 def fmt_steps(value: float) -> str:
@@ -1056,6 +1128,7 @@ def day_minimum_met(data: dict) -> tuple[bool, dict]:
             sleep_hours > 0,
             reading_pages > 0,
             is_set(data.get("Ккал")),
+            parse_sheet_number(data.get("Траты_всего")) > 0,
             is_set(data.get("Вес")),
             is_set(data.get("Настроение")),
             is_set(data.get("Энергия")),
@@ -1182,6 +1255,17 @@ def get_daily_data(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> dict:
         data["Жиры"] = None
         data["Угли"] = None
     data["_macros"] = macros
+
+    expenses = db.get_expense_totals(date_str)
+    data["_expenses"] = expenses
+    data["Траты_всего"] = expenses.get("total", 0.0)
+    data["Траты_еда"] = expenses.get("Еда", 0.0)
+    data["Траты_одежда"] = expenses.get("Одежда", 0.0)
+    data["Траты_бытовуха"] = expenses.get("Бытовуха", 0.0)
+    data["Траты_гульки"] = expenses.get("Гульки", 0.0)
+    data["Траты_здоровье"] = expenses.get("Здоровье", 0.0)
+    data["Траты_другое"] = expenses.get("Другое", 0.0)
+
     data["_sleep_start"] = db.get_state(STATE_SLEEP_START)
     data["_sleep_start_day"] = db.get_state(STATE_SLEEP_START_DAY)
     data["_active_day"] = db.get_state(STATE_ACTIVE_DAY)
@@ -1335,9 +1419,13 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
     if anti_count:
         anti_label = f"Анти‑прокраст.: {anti_count}"
 
+    spend_total = parse_sheet_number(data.get("Траты_всего"))
+    spend_label = "Траты" if spend_total <= 0 else f"Траты: {fmt_money(spend_total)} ₽"
+
     return [
         (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
+        (f"✅ {spend_label}" if spend_total > 0 else spend_label, "leisure:expenses"),
         (shots_label, "leisure:shots"),
         (sleep_label, "leisure:sleep_manual"),
         (f"✅ {nap_label}" if nap_hours not in (None, "") else nap_label, "leisure:nap"),
@@ -1455,6 +1543,34 @@ async def build_anti_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> 
     if counts:
         buttons.append(("🗑 Очистить сегодня", "anti:clear"))
 
+    return "\n".join(lines), buttons
+
+
+async def build_expense_menu(context: ContextTypes.DEFAULT_TYPE, date_str: str) -> tuple[str, list[tuple[str, str]]]:
+    db = get_sheets(context)
+    totals = db.get_expense_totals(date_str)
+    total = float(totals.get("total", 0.0))
+
+    lines = [
+        "💸 Траты за день",
+        f"Итого: {fmt_money(total)} ₽",
+    ]
+    non_zero = [(label, float(totals.get(label, 0.0))) for label in EXPENSE_CATEGORY_LABELS.values() if totals.get(label)]
+    if non_zero:
+        details = " · ".join(f"{label.lower()} {fmt_money(amount)}" for label, amount in non_zero[:4])
+        lines.append(details)
+        if len(non_zero) > 4:
+            lines.append(f"… ещё {len(non_zero) - 4} катег.")
+
+    buttons: list[tuple[str, str]] = []
+    for label, callback in EXPENSE_OPTIONS:
+        amount = float(totals.get(label, 0.0))
+        btn = f"{label}: {fmt_money(amount)} ₽" if amount > 0 else label
+        buttons.append((btn, callback))
+
+    buttons.append(("↩️ Удалить последнюю", "expense:undo"))
+    if total > 0:
+        buttons.append(("🗑 Очистить за день", "expense:clear"))
     return "\n".join(lines), buttons
 
 
@@ -2035,6 +2151,60 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=build_shots_keyboard(count),
         )
         return
+    if data == "leisure:expenses":
+        await query.answer()
+        text, buttons = await build_expense_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")),
+        )
+        return
+    if data.startswith("expense:add:"):
+        await query.answer()
+        category_key = data.split(":", 2)[2]
+        category_label = EXPENSE_CATEGORY_LABELS.get(category_key)
+        if not category_label:
+            return
+        context.user_data["expense_category"] = category_label
+        context.user_data["expect"] = "expense_amount"
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            f"💸 {category_label}: введи сумму (например 1450 или 320.5)",
+            build_keyboard([("⬅️ Назад", "leisure:expenses")], cols=1),
+        )
+        return
+    if data == "expense:undo":
+        await query.answer()
+        removed = sheets.delete_last_expense(date_str)
+        text, buttons = await build_expense_menu(context, date_str)
+        prefix = "↩️ Удалил последнюю трату.\n\n" if removed else "Нет трат для удаления.\n\n"
+        await query.edit_message_text(
+            f"{prefix}{text}",
+            reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")),
+        )
+        return
+    if data == "expense:clear":
+        await query.answer()
+        await query.edit_message_text(
+            "Очистить все траты за выбранный день?",
+            reply_markup=build_keyboard(
+                [("✅ Да", "expense_clear:yes"), ("↩️ Нет", "expense_clear:no")],
+                cols=2,
+                back=("⬅️ Назад", "leisure:expenses"),
+            ),
+        )
+        return
+    if data.startswith("expense_clear:"):
+        await query.answer()
+        if data == "expense_clear:yes":
+            sheets.clear_expenses(date_str)
+        text, buttons = await build_expense_menu(context, date_str)
+        await query.edit_message_text(
+            text,
+            reply_markup=build_keyboard(buttons, cols=2, back=("⬅️ Назад", "menu:leisure")),
+        )
+        return
     if data == "leisure:sleep_manual":
         await query.answer()
         context.user_data["expect"] = "sleep_bed_manual"
@@ -2422,6 +2592,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await finalize_input(context, chat_id, update.message.message_id)
         return
 
+    if expect == "expense_amount":
+        category = context.user_data.get("expense_category")
+        if not category:
+            context.user_data.clear()
+            await send_or_edit_prompt(context, chat_id, "Не выбрана категория траты. Открой «Досуг → Траты» ещё раз.")
+            return
+        try:
+            amount = parse_number(text)
+        except ValueError:
+            await send_or_edit_prompt(context, chat_id, "Нужна сумма числом. Пример: 1450 или 320.5")
+            return
+        if amount <= 0:
+            await send_or_edit_prompt(context, chat_id, "Сумма должна быть больше нуля.")
+            return
+        sheets.add_expense(date_str, time_str(cfg.timezone), category, amount, "")
+        context.user_data.clear()
+        await finalize_input(context, chat_id, update.message.message_id)
+        return
+
     if expect == "sleep_bed_manual":
         try:
             hours, minutes = parse_time_hhmm(text)
@@ -2643,6 +2832,18 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     else:
         lines.append("🍽 —")
 
+    expense_total = parse_sheet_number(data.get("Траты_всего"))
+    if expense_total > 0:
+        expense_parts: list[str] = []
+        for label, header in EXPENSE_HEADER_BY_LABEL.items():
+            value = parse_sheet_number(data.get(header))
+            if value > 0:
+                expense_parts.append(f"{label.lower()} {fmt_money(value)}")
+        preview = " · ".join(expense_parts[:3])
+        if len(expense_parts) > 3:
+            preview = f"{preview} +{len(expense_parts) - 3}"
+        lines.append(f"💸 Траты: {fmt_money(expense_total)} ₽" + (f" ({preview})" if preview else ""))
+
     morale_parts = []
     if data.get("Настроение"):
         morale_parts.append(f"настроение {data.get('Настроение')}")
@@ -2854,6 +3055,9 @@ def build_export_workbook(context: ContextTypes.DEFAULT_TYPE) -> Path:
 
     ws = wb.create_sheet("session_log")
     _write_sheet(ws, ["date", "time", "category", "subcategory", "minutes", "comment"], db.list_session_log_all())
+
+    ws = wb.create_sheet("expense_log")
+    _write_sheet(ws, ["date", "time", "category", "amount", "comment"], db.list_expense_log_all())
 
     ws = wb.create_sheet("food_items")
     _write_sheet(ws, ["name", "protein_100", "fat_100", "carb_100", "kcal_100"], db.list_food_items())

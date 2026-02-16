@@ -102,6 +102,15 @@ class Database:
                     comment TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS expense_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    time TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    comment TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS habits (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
@@ -421,6 +430,82 @@ class Database:
             self._conn.commit()
             return cur.lastrowid
 
+    def add_expense(
+        self,
+        date_str: str,
+        time_str: str,
+        category: str,
+        amount: float,
+        comment: str = "",
+    ) -> int:
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "INSERT INTO expense_log (date, time, category, amount, comment) VALUES (?,?,?,?,?)",
+                (date_str, time_str, category, amount, comment),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_expenses(self, date_str: str) -> list[dict]:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, date, time, category, amount, comment
+                FROM expense_log
+                WHERE date=?
+                ORDER BY id
+                """,
+                (date_str,),
+            )
+            rows = cur.fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_last_expense(self, date_str: str, *, category: str | None = None) -> bool:
+        params = [date_str]
+        sql = "SELECT id FROM expense_log WHERE date=?"
+        if category:
+            sql += " AND category=?"
+            params.append(category)
+        sql += " ORDER BY id DESC LIMIT 1"
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            row = cur.fetchone()
+            if not row:
+                return False
+            self._conn.execute("DELETE FROM expense_log WHERE id=?", (row["id"],))
+            self._conn.commit()
+        return True
+
+    def clear_expenses(self, date_str: str) -> int:
+        with self._lock:
+            cur = self._conn.execute("SELECT COUNT(*) AS cnt FROM expense_log WHERE date=?", (date_str,))
+            count = int(cur.fetchone()["cnt"])
+            if count <= 0:
+                return 0
+            self._conn.execute("DELETE FROM expense_log WHERE date=?", (date_str,))
+            self._conn.commit()
+        return count
+
+    def get_expense_totals(self, date_str: str) -> dict[str, float]:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT category, SUM(amount) AS total
+                FROM expense_log
+                WHERE date=?
+                GROUP BY category
+                """,
+                (date_str,),
+            )
+            rows = cur.fetchall()
+        totals: dict[str, float] = {"total": 0.0}
+        for row in rows:
+            value = float(row["total"] or 0.0)
+            totals[row["category"]] = value
+            totals["total"] += value
+        return totals
+
     def get_sessions(self, date_str: str, *, category: str | None = None) -> list[dict]:
         params = [date_str]
         sql = "SELECT * FROM session_log WHERE date=?"
@@ -559,6 +644,18 @@ class Database:
                 """
                 SELECT date, time, category, subcategory, minutes, comment
                 FROM session_log
+                ORDER BY id
+                """
+            )
+            rows = cur.fetchall()
+        return [dict(row) for row in rows]
+
+    def list_expense_log_all(self) -> list[dict]:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT date, time, category, amount, comment
+                FROM expense_log
                 ORDER BY id
                 """
             )
