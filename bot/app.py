@@ -3,10 +3,11 @@
 import asyncio
 import json
 import logging
+import random
 import sys
 import threading
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -229,6 +230,8 @@ STATE_SLEEP_START = "sleep_start"
 STATE_SLEEP_START_DAY = "sleep_start_day"
 STATE_SLEEP_START_BED = "sleep_start_bed"
 STATE_VIEW_DATE = "view_date"
+QUOTE_FILE = BASE_DIR / "citata.txt"
+QUOTE_DEFAULT_TIMES = ((9, 0), (21, 0))
 
 
 def get_active_date(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -654,6 +657,42 @@ async def render_stats(context: ContextTypes.DEFAULT_TYPE, chat_id: int, period:
     await send_or_edit_summary(context, chat_id, text, build_stats_keyboard(period))
 
 
+async def send_quote_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    quote = pick_quote(context)
+    if not quote:
+        return
+    chat_id = context.job.chat_id if context.job else None
+    if chat_id is None:
+        return
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"💬 Цитата\n\n{quote}",
+        reply_markup=build_keyboard([("🗑 Удалить", "quote:delete")], cols=1),
+    )
+
+
+def schedule_quote_jobs(app, config) -> None:
+    if not app.job_queue:
+        LOGGER.warning("JobQueue недоступен: рассылка цитат выключена.")
+        return
+    chat_id = app.bot_data.get("allowed_user_id")
+    if not chat_id:
+        LOGGER.info("ALLOWED_USER_ID не задан: рассылка цитат выключена.")
+        return
+    try:
+        tz = ZoneInfo(config.timezone)
+    except Exception:
+        tz = None
+    for hour, minute in QUOTE_DEFAULT_TIMES:
+        app.job_queue.run_daily(
+            send_quote_job,
+            time=dt_time(hour=hour, minute=minute, tzinfo=tz),
+            name=f"quote_{hour:02d}{minute:02d}",
+            chat_id=chat_id,
+        )
+    LOGGER.info("Quote jobs scheduled at %s", ", ".join(f"{h:02d}:{m:02d}" for h, m in QUOTE_DEFAULT_TIMES))
+
+
 def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     viewing_date = str(data.get("Дата") or "")
@@ -751,10 +790,21 @@ def parse_number(value: str) -> float:
 
 
 def parse_time_hhmm(value: str) -> tuple[int, int]:
-    text = value.strip()
-    if ":" not in text:
+    text = value.strip().replace(",", ".")
+    if not text:
         raise ValueError("time")
-    hours_str, minutes_str = text.split(":", 1)
+    if text.endswith("."):
+        text = text[:-1]
+
+    if ":" in text:
+        hours_str, minutes_str = text.split(":", 1)
+    elif "." in text:
+        hours_str, minutes_str = text.split(".", 1)
+    else:
+        hours_str, minutes_str = text, "0"
+
+    if minutes_str == "":
+        minutes_str = "0"
     if not hours_str.isdigit() or not minutes_str.isdigit():
         raise ValueError("time")
     hours = int(hours_str)
@@ -762,6 +812,63 @@ def parse_time_hhmm(value: str) -> tuple[int, int]:
     if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
         raise ValueError("time")
     return hours, minutes
+
+
+def load_quotes(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    text = ""
+    for encoding in ("utf-8", "cp1251", "utf-8-sig"):
+        try:
+            text = path.read_text(encoding=encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text:
+        return []
+
+    quotes: list[str] = []
+    block: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            if block:
+                quotes.append(" ".join(block).strip())
+                block = []
+            continue
+        block.append(line)
+    if block:
+        quotes.append(" ".join(block).strip())
+    return [q for q in quotes if q]
+
+
+def pick_quote(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    quotes: list[str] = context.application.bot_data.get("quotes", [])
+    if not quotes:
+        return None
+    deck: list[int] = context.application.bot_data.get("quote_deck", [])
+    if not deck:
+        deck = list(range(len(quotes)))
+        random.shuffle(deck)
+    idx = deck.pop()
+    context.application.bot_data["quote_deck"] = deck
+    return quotes[idx]
+
+
+def end_day_feedback(data: dict) -> str:
+    quality = compute_quality(data) or 0
+    status = day_completion_status(data)
+    if status == "full":
+        if quality >= 90:
+            return "🔥 Отлично поработал сегодня."
+        return "✅ Достаточно поработал, но мог больше."
+    if status == "partial":
+        if quality >= 60:
+            return "⚠️ Неплохо: сделал часть задач, но день можно усилить."
+        return "⚠️ Поработал слабо, но что-то сделал."
+    if quality > 0:
+        return "⚠️ День слабый: сделал минимум."
+    return "❌ Сегодня почти ничего не сделал."
 
 
 def parse_numbers(text: str, count: int) -> list[float]:
@@ -1744,6 +1851,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     date_str = get_view_date(context)
     sheets.ensure_daily_row(date_str)
 
+    if data == "quote:delete":
+        await query.answer()
+        await safe_delete_message(context.bot, query.message.chat_id, query.message.message_id)
+        return
+
     if data.startswith("confirm:"):
         await query.answer()
         pending = context.user_data.get("pending_set")
@@ -2273,8 +2385,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             sheets.set_state(STATE_SLEEP_START_BED, now.strftime("%H:%M"))
             daily = get_daily_data(context, active_day)
             summary = await build_daily_summary(context, active_day)
+            feedback = end_day_feedback(daily)
             await query.edit_message_text(
-                f"{summary}\n\n😴 Лег спать. Нажми «Проснулся», когда встанешь.",
+                f"{summary}\n\n{feedback}\n😴 Лег спать. Нажми «Проснулся», когда встанешь.",
                 reply_markup=build_main_menu_keyboard(daily),
             )
             return
@@ -3302,6 +3415,8 @@ def main() -> None:
     app.bot_data["db"] = db
     app.bot_data["config"] = config
     app.bot_data["allowed_user_id"] = config.allowed_user_id
+    app.bot_data["quotes"] = load_quotes(QUOTE_FILE)
+    app.bot_data["quote_deck"] = []
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("export", export_command))
@@ -3310,6 +3425,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(handle_error)
+    schedule_quote_jobs(app, config)
 
     LOGGER.info("Bot started")
     if sys.platform.startswith("win"):
