@@ -658,16 +658,19 @@ async def render_stats(context: ContextTypes.DEFAULT_TYPE, chat_id: int, period:
 
 
 async def send_quote_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    quote = pick_quote(context)
-    if not quote:
+    quote_data = pick_quote(context)
+    if not quote_data:
         return
+    quote_idx, quote = quote_data
     chat_id = context.job.chat_id if context.job else None
     if chat_id is None:
         return
+    quotes: list[str] = context.application.bot_data.get("quotes", [])
+    total = len(quotes)
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"💬 Цитата\n\n{quote}",
-        reply_markup=build_keyboard([("🗑 Удалить", "quote:delete")], cols=1),
+        text=f"💬 Цитата {quote_idx + 1}/{total}\n\n{quote}",
+        reply_markup=build_quote_keyboard(quote_idx, total),
     )
 
 
@@ -705,7 +708,12 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("↩️ Отменить сон", callback_data="sleep:cancel"),
             ]
         )
-        rows.append([InlineKeyboardButton("📅 Дата", callback_data="menu:date")])
+        rows.append(
+            [
+                InlineKeyboardButton("📅 Дата", callback_data="menu:date"),
+                InlineKeyboardButton("💬 Цитата", callback_data="quote:random"),
+            ]
+        )
         if active_date and viewing_date and viewing_date != active_date:
             rows.append([InlineKeyboardButton("↩️ К текущему дню", callback_data="date:today")])
         return InlineKeyboardMarkup(rows)
@@ -717,7 +725,12 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📊 Статистика", callback_data="stats:week"),
         ]
     )
-    rows.append([InlineKeyboardButton("📅 Дата", callback_data="menu:date")])
+    rows.append(
+        [
+            InlineKeyboardButton("📅 Дата", callback_data="menu:date"),
+            InlineKeyboardButton("💬 Цитата", callback_data="quote:random"),
+        ]
+    )
     if active_date and viewing_date and viewing_date != active_date:
         rows.append([InlineKeyboardButton("↩️ К текущему дню", callback_data="date:today")])
     row: list[InlineKeyboardButton] = []
@@ -842,7 +855,22 @@ def load_quotes(path: Path) -> list[str]:
     return [q for q in quotes if q]
 
 
-def pick_quote(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+def build_quote_keyboard(index: int, total: int) -> InlineKeyboardMarkup:
+    if total <= 0:
+        return build_keyboard([("🗑 Удалить", "quote:delete")], cols=1)
+    prev_idx = (index - 1) % total
+    next_idx = (index + 1) % total
+    rows = [
+        [
+            InlineKeyboardButton("⬅️ Назад", callback_data=f"quote:show:{prev_idx}"),
+            InlineKeyboardButton("➡️ Дальше", callback_data=f"quote:show:{next_idx}"),
+        ],
+        [InlineKeyboardButton("🗑 Удалить", callback_data="quote:delete")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def pick_quote(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, str] | None:
     quotes: list[str] = context.application.bot_data.get("quotes", [])
     if not quotes:
         return None
@@ -852,7 +880,31 @@ def pick_quote(context: ContextTypes.DEFAULT_TYPE) -> str | None:
         random.shuffle(deck)
     idx = deck.pop()
     context.application.bot_data["quote_deck"] = deck
-    return quotes[idx]
+    return idx, quotes[idx]
+
+
+async def send_quote_message(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    index: int | None = None,
+) -> None:
+    quotes: list[str] = context.application.bot_data.get("quotes", [])
+    if not quotes:
+        await context.bot.send_message(chat_id=chat_id, text="Файл с цитатами пустой или не найден.")
+        return
+    total = len(quotes)
+    if index is None:
+        picked = pick_quote(context)
+        if not picked:
+            return
+        index = picked[0]
+    index = index % total
+    quote = quotes[index]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"💬 Цитата {index + 1}/{total}\n\n{quote}",
+        reply_markup=build_quote_keyboard(index, total),
+    )
 
 
 def end_day_feedback(data: dict) -> str:
@@ -1854,6 +1906,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "quote:delete":
         await query.answer()
         await safe_delete_message(context.bot, query.message.chat_id, query.message.message_id)
+        return
+    if data == "quote:random":
+        await query.answer()
+        await send_quote_message(context, query.message.chat_id)
+        return
+    if data.startswith("quote:show:"):
+        await query.answer()
+        quotes: list[str] = context.application.bot_data.get("quotes", [])
+        if not quotes:
+            await query.edit_message_text("Файл с цитатами пустой или не найден.")
+            return
+        try:
+            index = int(data.split(":", 2)[2])
+        except (IndexError, ValueError):
+            index = 0
+        total = len(quotes)
+        index = index % total
+        await query.edit_message_text(
+            text=f"💬 Цитата {index + 1}/{total}\n\n{quotes[index]}",
+            reply_markup=build_quote_keyboard(index, total),
+        )
         return
 
     if data.startswith("confirm:"):
@@ -3213,6 +3286,15 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
 
 
+async def quote_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(context, update.effective_user.id if update.effective_user else None):
+        return
+    if update.message is None:
+        return
+    await send_quote_message(context, update.effective_chat.id)
+    await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
+
+
 def parse_sync_payload(text: str) -> dict:
     parts = text.split(maxsplit=1)
     if len(parts) < 2:
@@ -3422,6 +3504,7 @@ def main() -> None:
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CommandHandler("static", static_command))
+    app.add_handler(CommandHandler("quote", quote_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(handle_error)
