@@ -423,6 +423,13 @@ def shooting_activity_label(last7_total: int, last7_shot_days: int) -> str:
     return "нет активности"
 
 
+def date_series(start_date, end_date) -> list[str]:
+    if end_date < start_date:
+        return []
+    days = (end_date - start_date).days
+    return [(start_date + timedelta(days=i)).isoformat() for i in range(days + 1)]
+
+
 def rolling_window_max(values: list[int], window: int) -> int:
     if not values:
         return 0
@@ -445,6 +452,13 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     if not dates:
         return f"📊 Статистика ({label})\nНет данных."
 
+    active_day = db.get_state(STATE_ACTIVE_DAY) or today_str(cfg.timezone)
+    try:
+        active_date = datetime.fromisoformat(active_day).date()
+    except ValueError:
+        active_day = today_str(cfg.timezone)
+        active_date = datetime.fromisoformat(active_day).date()
+
     full = partial = none = tracked = 0
     quality_sum = quality_count = 0
     sleep_sum = sleep_count = 0
@@ -455,7 +469,6 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     ml_sum = ml_count = 0
     alg_sum = alg_count = 0
     uni_sum = uni_count = 0
-    shots_period_total = shots_period_days = 0
     shots_by_date: dict[str, int] = {}
     last_shot_date: str | None = None
     expense_total_sum = 0.0
@@ -470,10 +483,6 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
         shots_by_date[date_str] = shots
         if shots > 0:
             last_shot_date = date_str
-        if date_str in dates and shots > 0:
-            shots_period_days += 1
-        if date_str in dates:
-            shots_period_total += shots
 
     for date_str in dates:
         data = get_daily_data(context, date_str)
@@ -540,8 +549,8 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
                 expense_max_day = day_expense
                 expense_max_date = date_str
         expense_total_sum += day_expense
-        for label, header in EXPENSE_HEADER_BY_LABEL.items():
-            expense_by_category[label] += parse_sheet_number(data.get(header))
+        for category_label, header in EXPENSE_HEADER_BY_LABEL.items():
+            expense_by_category[category_label] += parse_sheet_number(data.get(header))
 
     if tracked == 0:
         return f"📊 Статистика ({label})\nНет данных."
@@ -569,25 +578,66 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     )
 
     period_span = len(dates)
-    shot_freq_pct = int(round((shots_period_days / period_span) * 100)) if period_span > 0 else 0
-    shots_avg_day = fmt_num(shots_period_total / period_span, 1) if period_span > 0 else "—"
+    if period == "week":
+        shot_period_dates = date_series(active_date - timedelta(days=6), active_date)
+    elif period == "month":
+        shot_period_dates = date_series(active_date - timedelta(days=29), active_date)
+    else:
+        if all_dates:
+            try:
+                first_date = datetime.fromisoformat(all_dates[0]).date()
+            except ValueError:
+                first_date = active_date
+            if first_date > active_date:
+                first_date = active_date
+        else:
+            first_date = active_date
+        shot_period_dates = date_series(first_date, active_date)
 
-    active_day = db.get_state(STATE_ACTIVE_DAY) or today_str(cfg.timezone)
+    shot_values = [shots_by_date.get(day, 0) for day in shot_period_dates]
+    shot_period_span = len(shot_period_dates)
+    shots_period_total = sum(shot_values)
+    shots_days_count = sum(1 for value in shot_values if value > 0)
+    shot_freq_pct = int(round((shots_days_count / shot_period_span) * 100)) if shot_period_span > 0 else 0
+    shots_avg_day = fmt_num(shots_period_total / shot_period_span, 1) if shot_period_span > 0 else "—"
+    shots_avg_active_day = fmt_num(shots_period_total / shots_days_count, 1) if shots_days_count > 0 else "—"
+
+    shot_best_day = max(shot_values) if shot_values else 0
+    shot_best_day_date = ""
+    if shot_best_day > 0 and shot_period_dates:
+        shot_best_day_date = shot_period_dates[shot_values.index(shot_best_day)]
+
     if last_shot_date:
         days_no_shot = max(
             0,
-            (datetime.fromisoformat(active_day).date() - datetime.fromisoformat(last_shot_date).date()).days,
+            (active_date - datetime.fromisoformat(last_shot_date).date()).days,
         )
     else:
-        days_no_shot = period_span
+        days_no_shot = shot_period_span
+
+    streak_current = 0
+    cursor = active_date
+    while shots_by_date.get(cursor.isoformat(), 0) > 0:
+        streak_current += 1
+        cursor -= timedelta(days=1)
+
+    streak_best_period = 0
+    streak = 0
+    for value in shot_values:
+        if value > 0:
+            streak += 1
+            if streak > streak_best_period:
+                streak_best_period = streak
+        else:
+            streak = 0
 
     if all_dates:
         series_start = datetime.fromisoformat(all_dates[0]).date()
-        series_end = datetime.fromisoformat(active_day).date()
+        series_end = active_date
         span = (series_end - series_start).days + 1
         by_day = [0] * max(1, span)
-        for d, value in shots_by_date.items():
-            idx = (datetime.fromisoformat(d).date() - series_start).days
+        for day_str, value in shots_by_date.items():
+            idx = (datetime.fromisoformat(day_str).date() - series_start).days
             if 0 <= idx < len(by_day):
                 by_day[idx] = value
         max_week = rolling_window_max(by_day, 7)
@@ -596,7 +646,7 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     else:
         max_week = max_month = max_all = 0
 
-    last7_start = datetime.fromisoformat(active_day).date() - timedelta(days=6)
+    last7_start = active_date - timedelta(days=6)
     last7_total = 0
     last7_days = 0
     for i in range(7):
@@ -633,8 +683,15 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
         f"📚 Учеба ср.: {study_line}",
         "",
         f"🎯 Стрельба: {shoot_activity}",
-        f"• Частота: {shot_freq_pct}% дней ({shots_period_days}/{period_span})",
+        f"• Частота: {shot_freq_pct}% дней ({shots_days_count}/{shot_period_span})",
         f"• Ср. за день: {shots_avg_day} раз",
+        f"• Ср. в день со стрельбой: {shots_avg_active_day} раз",
+        f"• Серия сейчас: {streak_current} дн | лучшая в периоде: {streak_best_period} дн",
+        (
+            f"• Пик за день: {shot_best_day} ({shot_best_day_date})"
+            if shot_best_day > 0
+            else "• Пик за день: 0"
+        ),
         f"• Без стрельбы: {days_no_shot} дн",
         f"• Пик: 7д {max_week} | 30д {max_month} | всё {max_all}",
         "",
