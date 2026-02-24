@@ -2808,6 +2808,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     date_str = get_view_date(context)
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
+    await safe_delete_message(context.bot, chat_id, update.message.message_id)
 
     if expect == "view_date":
         try:
