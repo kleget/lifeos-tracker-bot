@@ -278,6 +278,10 @@ def prompt_state_key(chat_id: int) -> str:
     return f"prompt_msg_{chat_id}"
 
 
+def export_state_key(chat_id: int) -> str:
+    return f"export_msg_{chat_id}"
+
+
 def get_state_int(db: Database, key: str) -> int | None:
     raw = db.get_state(key)
     if not raw:
@@ -297,13 +301,34 @@ async def safe_delete_message(bot, chat_id: int, message_id: int | None) -> None
         return
 
 
+async def ensure_single_summary_message(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    current_message_id: int,
+) -> None:
+    db = get_sheets(context)
+    stored_summary_id = get_state_int(db, summary_state_key(chat_id))
+    if stored_summary_id and stored_summary_id != current_message_id:
+        await safe_delete_message(context.bot, chat_id, stored_summary_id)
+    db.set_state(summary_state_key(chat_id), str(current_message_id))
+
+    prompt_id = get_state_int(db, prompt_state_key(chat_id))
+    if prompt_id and prompt_id != current_message_id:
+        await safe_delete_message(context.bot, chat_id, prompt_id)
+        db.set_state(prompt_state_key(chat_id), None)
+
+
 async def send_or_edit_summary(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
     text: str,
-    keyboard: InlineKeyboardMarkup,
+    keyboard: InlineKeyboardMarkup | None,
 ) -> None:
     db = get_sheets(context)
+    export_id = get_state_int(db, export_state_key(chat_id))
+    if export_id:
+        await safe_delete_message(context.bot, chat_id, export_id)
+        db.set_state(export_state_key(chat_id), None)
     msg_id = get_state_int(db, summary_state_key(chat_id))
     if msg_id:
         try:
@@ -326,14 +351,13 @@ async def send_or_edit_prompt(
     keyboard: InlineKeyboardMarkup | None = None,
 ) -> int:
     db = get_sheets(context)
-    msg_id = get_state_int(db, prompt_state_key(chat_id))
-    if msg_id:
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, reply_markup=keyboard)
-            return msg_id
-        except Exception:
-            pass
+    await send_or_edit_summary(context, chat_id, text, keyboard)
+    summary_id = get_state_int(db, summary_state_key(chat_id))
+    if summary_id:
+        db.set_state(prompt_state_key(chat_id), str(summary_id))
+        return summary_id
     sent = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+    db.set_state(summary_state_key(chat_id), str(sent.message_id))
     db.set_state(prompt_state_key(chat_id), str(sent.message_id))
     return sent.message_id
 
@@ -342,7 +366,9 @@ async def clear_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None
     db = get_sheets(context)
     msg_id = get_state_int(db, prompt_state_key(chat_id))
     if msg_id:
-        await safe_delete_message(context.bot, chat_id, msg_id)
+        summary_id = get_state_int(db, summary_state_key(chat_id))
+        if summary_id != msg_id:
+            await safe_delete_message(context.bot, chat_id, msg_id)
         db.set_state(prompt_state_key(chat_id), None)
 
 
@@ -724,10 +750,11 @@ async def send_quote_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     quotes: list[str] = context.application.bot_data.get("quotes", [])
     total = len(quotes)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"💬 Цитата {quote_idx + 1}/{total}\n\n{quote}",
-        reply_markup=build_quote_keyboard(quote_idx, total),
+    await send_or_edit_summary(
+        context,
+        chat_id,
+        f"💬 Цитата {quote_idx + 1}/{total}\n\n{quote}",
+        build_quote_keyboard(quote_idx, total),
     )
 
 
@@ -758,46 +785,41 @@ def build_main_menu_keyboard(data: dict) -> InlineKeyboardMarkup:
     viewing_date = str(data.get("Дата") or "")
     active_date = str(data.get("_active_day") or "")
     if data.get("_sleep_start"):
-        rows.append([InlineKeyboardButton("☀️ Я проснулся", callback_data="sleep:toggle")])
+        rows.append([InlineKeyboardButton("☀️ Проснулся", callback_data="sleep:toggle")])
         rows.append(
             [
-                InlineKeyboardButton("✏️ Исправить отбой", callback_data="sleep:edit"),
-                InlineKeyboardButton("↩️ Отменить сон", callback_data="sleep:cancel"),
+                InlineKeyboardButton("✏️ Отбой", callback_data="sleep:edit"),
+                InlineKeyboardButton("↩️ Отмена", callback_data="sleep:cancel"),
             ]
         )
-        rows.append(
-            [
-                InlineKeyboardButton("📅 Дата", callback_data="menu:date"),
-                InlineKeyboardButton("💬 Цитата", callback_data="quote:random"),
-            ]
-        )
+        rows.append([InlineKeyboardButton("📅", callback_data="menu:date"), InlineKeyboardButton("💬", callback_data="quote:random")])
         if active_date and viewing_date and viewing_date != active_date:
             rows.append([InlineKeyboardButton("↩️ К текущему дню", callback_data="date:today")])
         return InlineKeyboardMarkup(rows)
 
-    rows.append([InlineKeyboardButton("😴 Лёг спать", callback_data="sleep:toggle")])
     rows.append(
         [
-            InlineKeyboardButton("🔄 Обновить", callback_data="menu:refresh"),
-            InlineKeyboardButton("📊 Статистика", callback_data="stats:week"),
+            InlineKeyboardButton("😴 Сон", callback_data="sleep:toggle"),
+            InlineKeyboardButton("🔄", callback_data="menu:refresh"),
+            InlineKeyboardButton("📊", callback_data="stats:week"),
+        ]
+    )
+    rows.append([InlineKeyboardButton("📅", callback_data="menu:date"), InlineKeyboardButton("💬", callback_data="quote:random")])
+    rows.append(
+        [
+            InlineKeyboardButton("🏋️", callback_data="menu:sport"),
+            InlineKeyboardButton("📚", callback_data="menu:study"),
+            InlineKeyboardButton("🌤", callback_data="menu:leisure"),
         ]
     )
     rows.append(
         [
-            InlineKeyboardButton("📅 Дата", callback_data="menu:date"),
-            InlineKeyboardButton("💬 Цитата", callback_data="quote:random"),
+            InlineKeyboardButton("🙂", callback_data="menu:morale"),
+            InlineKeyboardButton("🧠", callback_data="menu:habits"),
         ]
     )
     if active_date and viewing_date and viewing_date != active_date:
         rows.append([InlineKeyboardButton("↩️ К текущему дню", callback_data="date:today")])
-    row: list[InlineKeyboardButton] = []
-    for label, payload in MAIN_MENU:
-        row.append(InlineKeyboardButton(label, callback_data=payload))
-        if len(row) >= 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
     return InlineKeyboardMarkup(rows)
 
 
@@ -922,7 +944,10 @@ def build_quote_keyboard(index: int, total: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("⬅️ Назад", callback_data=f"quote:show:{prev_idx}"),
             InlineKeyboardButton("➡️ Дальше", callback_data=f"quote:show:{next_idx}"),
         ],
-        [InlineKeyboardButton("🗑 Удалить", callback_data="quote:delete")],
+        [
+            InlineKeyboardButton("↩️ К сводке", callback_data="quote:back"),
+            InlineKeyboardButton("🗑 Удалить", callback_data="quote:delete"),
+        ],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -957,10 +982,11 @@ async def send_quote_message(
         index = picked[0]
     index = index % total
     quote = quotes[index]
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"💬 Цитата {index + 1}/{total}\n\n{quote}",
-        reply_markup=build_quote_keyboard(index, total),
+    await send_or_edit_summary(
+        context,
+        chat_id,
+        f"💬 Цитата {index + 1}/{total}\n\n{quote}",
+        build_quote_keyboard(index, total),
     )
 
 
@@ -1955,6 +1981,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     query = update.callback_query
     data = query.data
+    if query.message is not None:
+        await ensure_single_summary_message(context, query.message.chat_id, query.message.message_id)
     cfg = context.application.bot_data["config"]
     sheets = get_sheets(context)
     date_str = get_view_date(context)
@@ -1962,7 +1990,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "quote:delete":
         await query.answer()
+        db = get_sheets(context)
+        db.set_state(summary_state_key(query.message.chat_id), None)
+        db.set_state(prompt_state_key(query.message.chat_id), None)
         await safe_delete_message(context.bot, query.message.chat_id, query.message.message_id)
+        return
+    if data == "quote:back":
+        await query.answer()
+        await safe_render_summary(context, query.message.chat_id, get_view_date(context))
         return
     if data == "quote:random":
         await query.answer()
@@ -3007,8 +3042,6 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     active_day = data.get("_active_day")
     date_label = "Сегодня" if str(active_day or "") == date_str else "Дата"
-    lines = [f"📅 {date_label}: {date_str}"]
-
     quality = fmt_value(data.get("Качество_дня"))
     if status == "full":
         quality_prefix = "✅"
@@ -3018,27 +3051,28 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         quality_prefix = "⬜"
     else:
         quality_prefix = "❌"
-    lines.append(f"{quality_prefix} Качество дня: {quality}")
+    lines = [f"📅 {date_label}: {date_str} · {quality_prefix}{quality}"]
 
     steps_display = fmt_steps(context_min["steps"])
     steps_square = steps_status_square(context_min["steps"])
-    lines.append(f"{steps_square} Шаги: {steps_display}")
 
     sleep_hours = context_min["sleep_hours"]
     sleep_display = "—" if sleep_hours <= 0 else f"{fmt_num(sleep_hours, 1)} ч"
     nap_hours = parse_sheet_number(data.get("Сон_дневной"))
-    if nap_hours > 0:
-        nap_display = f"{fmt_num(nap_hours, 1)} ч"
-        lines.append(f"😴 Сон: {sleep_display} (+дневной {nap_display})")
-    else:
-        lines.append(f"😴 Сон: {sleep_display}")
-
+    sleep_line = f"😴 {sleep_display}" if nap_hours <= 0 else f"😴 {sleep_display} (+{fmt_num(nap_hours, 1)}ч)"
     if data.get("Вес") not in (None, ""):
-        lines.append(f"⚖️ Вес: {data.get('Вес')}")
+        weight_line = f"⚖️ {data.get('Вес')}"
+    else:
+        weight_line = ""
+
+    meta_line = f"{steps_square} {steps_display} · {sleep_line}"
+    if weight_line:
+        meta_line = f"{meta_line} · {weight_line}"
+    lines.append(meta_line)
 
     shots_count = parse_sheet_number(data.get("Стрельнул_раз"))
     if shots_count:
-        lines.append(f"🎯 Стрельнул: {int(shots_count)}")
+        lines.append(f"🎯 {int(shots_count)}")
 
     training_value = data.get("Тренировка")
     training_display = display_training(training_value) or (training_value if training_value else "")
@@ -3050,7 +3084,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     if data.get("Кардио_мин"):
         sport_parts.append(f"кардио {data.get('Кардио_мин')}м")
     sport_line = "—" if not sport_parts else ", ".join(sport_parts)
-    lines.append(f"🏋️ Спорт: {sport_line}")
+    lines.append(f"🏋️ {sport_line}")
 
     study_parts = []
     if data.get("Английский_мин"):
@@ -3066,7 +3100,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         label = "не читал" if normalize_choice(reading_value) in {"0", "0.0"} else f"{reading_value} стр"
         study_parts.append(f"чтение {label}")
     study_line = "—" if not study_parts else " · ".join(study_parts)
-    lines.append(f"📚 Учеба: {study_line}")
+    lines.append(f"📚 {study_line}")
 
     if any([kcal, protein, fat, carbs]):
         lines.append(
@@ -3081,17 +3115,17 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         for label, header in EXPENSE_HEADER_BY_LABEL.items():
             value = parse_sheet_number(data.get(header))
             if value > 0:
-                expense_parts.append(f"{label.lower()} {fmt_money(value)}")
+                expense_parts.append(f"{label[:3].lower()} {fmt_money(value)}")
         preview = " · ".join(expense_parts[:3])
         if len(expense_parts) > 3:
             preview = f"{preview} +{len(expense_parts) - 3}"
-        lines.append(f"💸 Траты: {fmt_money(expense_total)} ₽" + (f" ({preview})" if preview else ""))
+        lines.append(f"💸 {fmt_money(expense_total)}₽" + (f" ({preview})" if preview else ""))
 
     morale_parts = []
     if data.get("Настроение"):
-        morale_parts.append(f"настроение {data.get('Настроение')}")
+        morale_parts.append(f"нстр {data.get('Настроение')}")
     if data.get("Энергия"):
-        morale_parts.append(f"энергия {data.get('Энергия')}")
+        morale_parts.append(f"эн {data.get('Энергия')}")
     if morale_parts:
         lines.append(f"🙂 {', '.join(morale_parts)}")
 
@@ -3101,7 +3135,7 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         preview = ", ".join(reasons[:3])
         if len(reasons) > 3:
             preview = f"{preview} +{len(reasons) - 3}"
-        lines.append(f"🧯 Анти‑прокраст.: {preview}")
+        lines.append(f"🧯 {preview}")
 
     habits_value = data.get("Привычки")
     habits_list = parse_habits_value(habits_value)
@@ -3109,23 +3143,23 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
         try:
             total_habits = len(db.get_habits())
             if total_habits:
-                lines.append(f"🧠 Привычки: {len(habits_list)}/{total_habits}")
+                lines.append(f"🧠 {len(habits_list)}/{total_habits}")
             else:
-                lines.append(f"🧠 Привычки: {', '.join(habits_list)}")
+                lines.append(f"🧠 {', '.join(habits_list)}")
         except Exception:
-            lines.append(f"🧠 Привычки: {', '.join(habits_list)}")
+            lines.append(f"🧠 {', '.join(habits_list)}")
 
     if data.get("О_чем_жалею"):
-        lines.append(f"📝 О чем жалею: {data.get('О_чем_жалею')}")
+        lines.append(f"📝 Жалею: {data.get('О_чем_жалею')}")
     if data.get("Отзыв_о_дне"):
-        lines.append(f"🗒 Отзыв: {data.get('Отзыв_о_дне')}")
+        lines.append(f"🗒 {data.get('Отзыв_о_дне')}")
 
     missing = data.get("Не_заполнено")
     if missing not in (None, ""):
-        lines.append(f"⚠️ Не хватает для зачета: {missing}")
+        lines.append(f"⚠️ {missing}")
 
     if date_str != calendar_date:
-        lines.append("🛌 День ещё не закрыт — новый начнётся после «Проснулся».")
+        lines.append("🛌 День еще не закрыт")
 
     return "\n".join(lines)
 
@@ -3318,19 +3352,56 @@ def build_export_workbook(context: ContextTypes.DEFAULT_TYPE) -> Path:
     return xlsx_path
 
 
+async def delete_export_and_restore_summary(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    export_message_id: int,
+    date_str: str,
+    *,
+    delay_seconds: int = 60,
+) -> None:
+    await asyncio.sleep(delay_seconds)
+    db = get_sheets(context)
+    await safe_delete_message(context.bot, chat_id, export_message_id)
+    stored = get_state_int(db, export_state_key(chat_id))
+    if stored == export_message_id:
+        db.set_state(export_state_key(chat_id), None)
+    await safe_render_summary(context, chat_id, date_str)
+
+
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(context, update.effective_user.id if update.effective_user else None):
         return
     if update.message is None:
         return
+    chat_id = update.effective_chat.id
+    date_str = get_view_date(context)
+    db = get_sheets(context)
+    await clear_prompt(context, chat_id)
+    await safe_delete_message(context.bot, chat_id, update.message.message_id)
+    summary_id = get_state_int(db, summary_state_key(chat_id))
+    if summary_id:
+        await safe_delete_message(context.bot, chat_id, summary_id)
+        db.set_state(summary_state_key(chat_id), None)
+
     xlsx_path = build_export_workbook(context)
     with xlsx_path.open("rb") as f:
-        await update.message.reply_document(
+        sent = await context.bot.send_document(
+            chat_id=chat_id,
             document=f,
             filename=xlsx_path.name,
-            caption="Экспорт готов ✅",
+            caption="Экспорт готов ✅ (удалится через 1 минуту)",
         )
-    await safe_delete_message(context.bot, update.effective_chat.id, update.message.message_id)
+    db.set_state(export_state_key(chat_id), str(sent.message_id))
+    context.application.create_task(
+        delete_export_and_restore_summary(
+            context,
+            chat_id,
+            sent.message_id,
+            date_str,
+            delay_seconds=60,
+        )
+    )
 
 
 async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
