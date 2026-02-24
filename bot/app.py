@@ -2646,12 +2646,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "morale:regret":
         await query.answer()
         context.user_data["expect"] = "regret"
-        await send_or_edit_prompt(context, query.message.chat_id, "О чем жалеешь сегодня? Напиши текст.")
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "О чем жалеешь сегодня? Напиши текст.",
+            build_keyboard([("↩️ Вернуться", "input:cancel:morale")], cols=1),
+        )
         return
     if data == "morale:review":
         await query.answer()
         context.user_data["expect"] = "review"
-        await send_or_edit_prompt(context, query.message.chat_id, "Отзыв о дне: напиши коротко.")
+        await send_or_edit_prompt(
+            context,
+            query.message.chat_id,
+            "Отзыв о дне: напиши коротко.",
+            build_keyboard([("↩️ Вернуться", "input:cancel:morale")], cols=1),
+        )
+        return
+
+    if data == "input:cancel:morale":
+        context.user_data.pop("expect", None)
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Моралька:", build_morale_menu(daily))
         return
 
     if data == "habits:text":
