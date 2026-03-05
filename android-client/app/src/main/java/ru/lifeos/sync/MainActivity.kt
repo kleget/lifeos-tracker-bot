@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.contracts.HealthPermissionsRequestContract
@@ -15,7 +16,7 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var settings: Settings
-    private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
+    private lateinit var permissionLauncher: ActivityResultLauncher<Intent>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -26,9 +27,8 @@ class MainActivity : AppCompatActivity() {
         binding.editServerUrl.setText(settings.serverUrl)
         binding.editToken.setText(settings.token)
 
-        val hc = HealthConnectService(this)
         permissionLauncher = registerForActivityResult(
-            hc.createPermissionContract()
+            ActivityResultContracts.StartActivityForResult()
         ) { _ ->
             refreshStatus()
         }
@@ -71,21 +71,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissions() {
         val hc = HealthConnectService(this)
-        val perms = HealthConnectService.CORE_PERMISSIONS + setOf(HealthConnectService.BACKGROUND_PERMISSION)
-        val provider = hc.getProviderPackageName() ?: HealthConnectService.PROVIDER_GOOGLE
-        val contract = HealthPermissionsRequestContract(provider)
-        val intent = contract.createIntent(this, perms)
-        val canResolve = intent.resolveActivity(packageManager) != null
-        if (!canResolve) {
-            toast("Permission screen not found, opening Health Connect")
-            val settingsIntent = hc.buildSettingsIntent()
-            if (packageManager.resolveActivity(settingsIntent, 0) != null) {
-                startActivity(settingsIntent)
+        lifecycleScope.launch {
+            val provider = hc.getProviderPackageName() ?: HealthConnectService.PROVIDER_GOOGLE
+            val coreGranted = if (hc.isAvailable()) hc.hasCorePermissions() else false
+            val requestPerms = if (coreGranted) {
+                setOf(HealthConnectService.BACKGROUND_PERMISSION)
+            } else {
+                HealthConnectService.CORE_PERMISSIONS
             }
-            return
+            val contract = HealthPermissionsRequestContract(provider)
+            val intent = contract.createIntent(this@MainActivity, requestPerms)
+            val canResolve = intent.resolveActivity(packageManager) != null
+            if (!canResolve) {
+                toast("Permission screen not found, opening Health Connect")
+                val settingsIntent = hc.buildSettingsIntent()
+                if (packageManager.resolveActivity(settingsIntent, 0) != null) {
+                    startActivity(settingsIntent)
+                }
+                return@launch
+            }
+            toast("Requesting permissions...")
+            permissionLauncher.launch(intent)
         }
-        toast("Requesting permissions...")
-        permissionLauncher.launch(perms)
     }
 
     private fun refreshStatus() {
