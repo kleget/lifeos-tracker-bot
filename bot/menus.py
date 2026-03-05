@@ -142,6 +142,7 @@ READING_OPTIONS = [("Не читал", "set:reading:0")] + [
 
 LEISURE_MENU = [
     ("Отдых", "leisure:rest"),
+    ("Статус дня", "leisure:day_status"),
     ("Продуктивность", "leisure:productivity"),
     ("💸 Траты", "leisure:expenses"),
     ("Дневной сон", "leisure:nap"),
@@ -181,6 +182,7 @@ REST_TYPE_OPTIONS = [
     ("кафовал", "set:rest_type:кафовал"),
     ("с кентами", "set:rest_type:с кентами"),
     ("в егорлыке", "set:rest_type:в егорлыке"),
+    ("нихуя", "set:rest_type:нихуя не делал"),
 ]
 
 SLEEP_BEDTIME_OPTIONS = [(str(n), f"set:sleep_bed:{n}") for n in [10, 11, 12, 1, 2, 3, 4, 5, 6]]
@@ -200,6 +202,16 @@ PRODUCTIVITY_OPTIONS = [
     ("50%", "set:productivity:50"),
     ("75%", "set:productivity:75"),
     ("100%", "set:productivity:100"),
+]
+
+DAY_STATUS_OPTIONS = [
+    ("болел", "set:day_status:болел"),
+    ("тильт", "set:day_status:тильт"),
+    ("вне города", "set:day_status:вне города"),
+    ("сбился режим", "set:day_status:сбился режим"),
+    ("перерыв", "set:day_status:перерыв"),
+    ("форс-мажор", "set:day_status:форс-мажор"),
+    ("🧹 Очистить", "clear:day_status"),
 ]
 
 PROCRASTINATION_OPTIONS = [

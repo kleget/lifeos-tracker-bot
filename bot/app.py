@@ -46,6 +46,7 @@ from menus import (
     SLEEP_HOURS_OPTIONS,
     SLEEP_REGIME_OPTIONS,
     PRODUCTIVITY_OPTIONS,
+    DAY_STATUS_OPTIONS,
     PROCRASTINATION_OPTIONS,
     EXPENSE_OPTIONS,
     FOOD_MENU,
@@ -91,6 +92,7 @@ DAILY_HEADERS = [
     "Стрельнул_раз",
     "Настроение",
     "Энергия",
+    "Статус_дня",
     "Траты_всего",
     "Траты_еда",
     "Траты_одежда",
@@ -136,6 +138,7 @@ COLUMN_MAP = {
     "shots": "shots_count",
     "mood": "mood",
     "energy": "energy",
+    "day_status": "day_status",
     "weight": "weight",
     "regret": "regret",
     "review": "review",
@@ -171,6 +174,7 @@ DB_TO_HEADER = {
     "shots_count": "Стрельнул_раз",
     "mood": "Настроение",
     "energy": "Энергия",
+    "day_status": "Статус_дня",
     "weight": "Вес",
     "regret": "О_чем_жалею",
     "review": "Отзыв_о_дне",
@@ -502,6 +506,9 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
     expense_max_day = 0.0
     expense_max_date = ""
     expense_by_category: dict[str, float] = {label: 0.0 for label in EXPENSE_HEADER_BY_LABEL}
+    paused_days = 0
+    paused_reasons: dict[str, int] = {}
+    paused_timeline: list[tuple[str, str]] = []
 
     for date_str in all_dates:
         data = get_daily_data(context, date_str)
@@ -512,7 +519,14 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
 
     for date_str in dates:
         data = get_daily_data(context, date_str)
+        day_status = normalize_choice(data.get("Статус_дня"))
         status = day_completion_status(data)
+        if status == "paused":
+            paused_days += 1
+            reason = day_status or "без причины"
+            paused_reasons[reason] = paused_reasons.get(reason, 0) + 1
+            paused_timeline.append((date_str, reason))
+            continue
         if status == "empty":
             continue
         tracked += 1
@@ -578,12 +592,12 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
         for category_label, header in EXPENSE_HEADER_BY_LABEL.items():
             expense_by_category[category_label] += parse_sheet_number(data.get(header))
 
-    if tracked == 0:
+    if tracked == 0 and paused_days == 0:
         return f"📊 Статистика ({label})\nНет данных."
 
-    full_pct = int(round(full / tracked * 100))
-    partial_pct = int(round(partial / tracked * 100))
-    none_pct = int(round(none / tracked * 100))
+    full_pct = int(round(full / tracked * 100)) if tracked > 0 else 0
+    partial_pct = int(round(partial / tracked * 100)) if tracked > 0 else 0
+    none_pct = int(round(none / tracked * 100)) if tracked > 0 else 0
 
     avg_quality = avg_value(quality_sum, quality_count, 0)
     avg_sleep = avg_value(sleep_sum, sleep_count, 1)
@@ -695,10 +709,15 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
             expense_cat_parts.append(f"{label_name.lower()} {fmt_money(value)}₽ ({share}%)")
             if len(expense_cat_parts) >= 4:
                 break
+    paused_reason_parts: list[str] = []
+    if paused_reasons:
+        ranked_reasons = sorted(paused_reasons.items(), key=lambda x: (-x[1], x[0]))
+        paused_reason_parts = [f"{reason} {count}" for reason, count in ranked_reasons[:4]]
 
     lines = [
         f"📊 Статистика ({label})",
-        f"Дней в выборке: {tracked}",
+        f"Дней с данными: {tracked}",
+        f"⏸ Пауза/сбой: {paused_days}",
         f"✅ Полных: {full_pct}% ({full})",
         f"🟧 Частичных: {partial_pct}% ({partial})",
         f"❌ Провалов: {none_pct}% ({none})",
@@ -726,6 +745,11 @@ def build_stats_summary(context: ContextTypes.DEFAULT_TYPE, period: str) -> str:
         f"• Ср. в день: {fmt_money(expense_avg_day)} ₽",
         f"• Дней с тратами: {expense_days}/{period_span}",
     ]
+    if paused_reason_parts:
+        lines.insert(11, f"⏸ Причины: {' · '.join(paused_reason_parts)}")
+        if paused_timeline:
+            recent = " · ".join(f"{d} {r}" for d, r in paused_timeline[-4:])
+            lines.insert(12, f"⏸ Последние: {recent}")
     if expense_days > 0:
         lines.append(f"• Ср. в день с тратами: {fmt_money(expense_avg_spend_day)} ₽")
     if expense_max_day > 0:
@@ -993,6 +1017,9 @@ async def send_quote_message(
 def end_day_feedback(data: dict) -> str:
     quality = compute_quality(data) or 0
     status = day_completion_status(data)
+    if status == "paused":
+        reason = normalize_choice(data.get("Статус_дня")) or "перерыв"
+        return f"⏸ День помечен: {reason}. Продолжаем дальше."
     if status == "full":
         if quality >= 90:
             return "🔥 Отлично поработал сегодня."
@@ -1394,6 +1421,8 @@ def day_minimum_met(data: dict) -> tuple[bool, dict]:
 
 def day_completion_status(data: dict) -> str:
     min_ok, context = day_minimum_met(data)
+    if normalize_choice(data.get("Статус_дня")) and not context["any_data"]:
+        return "paused"
     if not context["any_data"]:
         return "empty"
     if min_ok:
@@ -1408,6 +1437,8 @@ def day_completion_status(data: dict) -> str:
 
 
 def compute_missing(data: dict) -> str | None:
+    if normalize_choice(data.get("Статус_дня")):
+        return None
     missing: list[str] = []
     training = normalize_choice(data.get("Тренировка"))
     if not training:
@@ -1561,6 +1592,7 @@ FIELD_HEADERS = {
     "productivity": "Продуктивность",
     "mood": "Настроение",
     "energy": "Энергия",
+    "day_status": "Статус_дня",
 }
 
 FIELD_LABELS = {
@@ -1583,6 +1615,7 @@ FIELD_LABELS = {
     "productivity": "Продуктивность",
     "mood": "Настроение",
     "energy": "Энергия",
+    "day_status": "Статус дня",
 }
 
 
@@ -1640,6 +1673,9 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
     rest_time = data.get("Отдых_время")
     rest_label = "Отдых" if rest_time in (None, "") else f"Отдых: {rest_time}"
 
+    day_status = normalize_choice(data.get("Статус_дня"))
+    day_status_label = "Причина пропуска" if not day_status else f"Причина: {day_status}"
+
     productivity = data.get("Продуктивность")
     prod_label = "Продуктивность" if productivity in (None, "") else f"Продуктивность: {productivity}%"
 
@@ -1667,6 +1703,7 @@ def build_leisure_menu(data: dict) -> list[tuple[str, str]]:
 
     return [
         (f"✅ {rest_label}" if rest_time not in (None, "") else rest_label, "leisure:rest"),
+        (f"✅ {day_status_label}" if day_status else day_status_label, "leisure:day_status"),
         (f"✅ {prod_label}" if productivity not in (None, "") else prod_label, "leisure:productivity"),
         (f"✅ {spend_label}" if spend_total > 0 else spend_label, "leisure:expenses"),
         (shots_label, "leisure:shots"),
@@ -1932,6 +1969,8 @@ def menu_config(menu_key: str, data: dict) -> tuple[str, list[tuple[str, str]], 
         return ("Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, data.get("Отдых_время")), "menu:leisure", 2)
     if menu_key == "rest_type":
         return ("Отдых: тип", mark_set_buttons(REST_TYPE_OPTIONS, data.get("Отдых_тип")), "menu:leisure", 2)
+    if menu_key == "day_status":
+        return ("Причина пропуска", mark_set_buttons(DAY_STATUS_OPTIONS, data.get("Статус_дня")), "menu:leisure", 2)
     if menu_key == "sleep_bed":
         return ("Сон: во сколько заснул?", mark_set_buttons(SLEEP_BEDTIME_OPTIONS, data.get("Сон_отбой")), "menu:leisure", 3)
     if menu_key == "sleep_hours":
@@ -2405,6 +2444,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         current = daily.get("Отдых_время")
         await show_menu(query, "Отдых: время", mark_set_buttons(REST_TIME_OPTIONS, current), back_to="menu:leisure", cols=2)
         return
+    if data == "leisure:day_status":
+        daily = get_daily_data(context, date_str)
+        current = daily.get("Статус_дня")
+        await show_menu(query, "Причина пропуска", mark_set_buttons(DAY_STATUS_OPTIONS, current), back_to="menu:leisure", cols=2)
+        return
+    if data == "clear:day_status":
+        sheets.update_daily_fields(date_str, {COLUMN_MAP["day_status"]: ""})
+        daily = get_daily_data(context, date_str)
+        await show_menu(query, "Причина пропуска", mark_set_buttons(DAY_STATUS_OPTIONS, daily.get("Статус_дня")), back_to="menu:leisure", cols=2)
+        return
     if data == "leisure:nap":
         daily = get_daily_data(context, date_str)
         current = daily.get("Сон_дневной")
@@ -2691,7 +2740,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     return_menu = "sport"
                 elif field_key in {"english", "ml", "algos", "uni", "code_mode", "code_topic", "reading"}:
                     return_menu = "study"
-                elif field_key in {"rest_time", "rest_type", "sleep_bed", "sleep_hours", "sleep_regime", "productivity", "nap"}:
+                elif field_key in {"rest_time", "rest_type", "sleep_bed", "sleep_hours", "sleep_regime", "productivity", "nap", "day_status"}:
                     return_menu = "leisure"
                 elif field_key in {"mood", "energy"}:
                     return_menu = "morale"
@@ -2765,6 +2814,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "mood": "mood",
             "energy": "energy",
             "nap": "nap",
+            "day_status": "day_status",
         }
         if field_key in field_map:
             key = field_map[field_key]
@@ -2781,7 +2831,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if field_key in {"english", "ml", "algos", "uni", "reading"}:
                 await show_study_menu(query, context, date_str)
                 return
-            if field_key in {"productivity", "nap"}:
+            if field_key in {"productivity", "nap", "day_status"}:
                 daily = get_daily_data(context, date_str)
                 await show_menu(query, "Досуг:", build_leisure_menu(daily))
                 return
@@ -3060,16 +3110,22 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
 
     active_day = data.get("_active_day")
     date_label = "Сегодня" if str(active_day or "") == date_str else "Дата"
+    day_status = normalize_choice(data.get("Статус_дня"))
     quality = fmt_value(data.get("Качество_дня"))
     if status == "full":
         quality_prefix = "✅"
     elif status == "partial":
         quality_prefix = "🟧"
+    elif status == "paused":
+        quality_prefix = "⏸"
     elif status == "empty":
         quality_prefix = "⬜"
     else:
         quality_prefix = "❌"
-    lines = [f"📅 {date_label}: {date_str} · {quality_prefix}{quality}"]
+    if status == "paused":
+        lines = [f"📅 {date_label}: {date_str} · {quality_prefix} пауза"]
+    else:
+        lines = [f"📅 {date_label}: {date_str} · {quality_prefix}{quality}"]
 
     steps_display = fmt_steps(context_min["steps"])
     steps_square = steps_status_square(context_min["steps"])
@@ -3087,6 +3143,8 @@ async def build_daily_summary(context: ContextTypes.DEFAULT_TYPE, date_str: str)
     if weight_line:
         meta_line = f"{meta_line} · {weight_line}"
     lines.append(meta_line)
+    if day_status:
+        lines.append(f"⏸ Причина: {day_status}")
 
     shots_count = parse_sheet_number(data.get("Стрельнул_раз"))
     if shots_count:

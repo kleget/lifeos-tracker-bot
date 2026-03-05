@@ -71,7 +71,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissions() {
         val hc = HealthConnectService(this)
-        val perms = HealthConnectService.CORE_PERMISSIONS
+        val perms = HealthConnectService.CORE_PERMISSIONS + setOf(HealthConnectService.BACKGROUND_PERMISSION)
         val provider = hc.getProviderPackageName() ?: HealthConnectService.PROVIDER_GOOGLE
         val contract = HealthPermissionsRequestContract(provider)
         val intent = contract.createIntent(this, perms)

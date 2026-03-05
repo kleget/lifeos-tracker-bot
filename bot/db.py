@@ -54,6 +54,7 @@ class Database:
                     productivity INTEGER,
                     mood TEXT,
                     energy TEXT,
+                    day_status TEXT,
                     weight REAL,
                     regret TEXT,
                     review TEXT,
@@ -148,6 +149,7 @@ class Database:
                     "sleep_source": "TEXT",
                     "shots_count": "INTEGER",
                     "nap_hours": "REAL",
+                    "day_status": "TEXT",
                 },
             )
 
